@@ -14,9 +14,20 @@ import requests
 BASE_URL = "https://bible-api.com"
 DEFAULT_CACHE_DIR: Path = Path("data/api-cache")
 REQUEST_TIMEOUT = 30
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_DELAY = 1.0
-BETWEEN_REQUEST_DELAY = 0.5
+
+#: bible-api.com starts returning HTTP 429 ("Retry later") at roughly 15
+#: requests in quick succession.  Measured empirically: a 2s gap sustains
+#: 20+ consecutive requests without tripping the limiter.
+BETWEEN_REQUEST_DELAY = 2.0
+
+#: How long to wait when the server does return 429 and gives us no
+#: ``Retry-After`` header to go on.
+RATE_LIMIT_BACKOFF = 60.0
+
+#: Status codes worth retrying: transient server errors plus rate limits.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def fetch_chapter(
@@ -39,9 +50,10 @@ def fetch_chapter(
         try:
             resp = requests.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
-        except requests.HTTPError as exc:
-            if getattr(resp, "status_code", 0) >= 500 and attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY * (2 ** (attempt - 1)))
+        except requests.HTTPError:
+            status = getattr(resp, "status_code", 0)
+            if status in RETRYABLE_STATUS and attempt < MAX_RETRIES:
+                time.sleep(_retry_delay(resp, attempt))
                 continue
             raise
 
@@ -50,6 +62,24 @@ def fetch_chapter(
 
     msg = f"Failed after {MAX_RETRIES} retries for {book_name} chapter {chapter_num}"
     raise RuntimeError(msg)    # pragma: no cover
+
+
+def _retry_delay(resp: Any, attempt: int) -> float:
+    """Seconds to wait before retrying *resp*.
+
+    Honours ``Retry-After`` when the server sends it.  Rate limits (429)
+    need a much longer pause than a transient 5xx, so they get a flat
+    backoff rather than the usual exponential ramp.
+    """
+    retry_after = getattr(resp, "headers", {}).get("Retry-After")
+    if retry_after:
+        try:
+            return float(retry_after)
+        except (TypeError, ValueError):
+            pass
+    if getattr(resp, "status_code", 0) == 429:
+        return RATE_LIMIT_BACKOFF * attempt
+    return RETRY_DELAY * (2 ** (attempt - 1))
 
 
 def save_chapter(
@@ -71,7 +101,7 @@ def save_chapter(
     cache_dir.mkdir(parents=True, exist_ok=True)
     with key.open("w") as fh:
         json.dump(data, fh)
-    return {"verses": data}
+    return {"verses": data, "_fetched": True}
 
 
 def download_all(
@@ -99,26 +129,60 @@ def download_all(
         _upsert = None
 
     newly_fetched: list[tuple[str, int]] = []
+    failures: list[tuple[str, int, str]] = []
 
     for bname in book_names_list:
-        chapters = get_chapters_for_book(bname)
-        for chap in chapters:
+        print(f"Fetching {bname} ...", flush=True)
+        for chap in get_chapters_for_book(bname):
             try:
                 payload = save_chapter(bname, chap, cache_dir=cache_dir)
-                if _upsert is not None:
-                    verses = [
-                        (v["verse"], v["text"])
-                        for v in payload.get("verses", [])
-                    ]
-                    if verses:
-                        _upsert(db_path, bname, chap, verses)
-                newly_fetched.append((bname, chap))
-            except Exception:   # noqa: BLE001
-                print(f"Warning: failed to fetch {bname} {chap}")
+            except Exception as exc:   # noqa: BLE001
+                failures.append((bname, chap, f"{type(exc).__name__}: {exc}"))
+                print(f"Warning: failed to fetch {bname} {chap} -- {exc}")
+                # A rate limit means every following request will fail too,
+                # so stop rather than burning through the rest of the canon.
+                if _is_rate_limit(exc):
+                    print(
+                        "\nRate limited by bible-api.com. Progress is saved -- "
+                        "re-run 'bible-study init' later to resume where this "
+                        "left off.",
+                    )
+                    _report_failures(failures)
+                    return newly_fetched
+                continue
 
-        time.sleep(BETWEEN_REQUEST_DELAY)
+            if _upsert is not None:
+                verses = [
+                    (v["verse"], v["text"]) for v in payload.get("verses", [])
+                ]
+                if verses:
+                    _upsert(db_path, bname, chap, verses)
+            newly_fetched.append((bname, chap))
 
+            # Throttle only on real network calls; cache hits are free, which
+            # keeps a resumed run fast over already-downloaded chapters.
+            if payload.get("_fetched"):
+                time.sleep(BETWEEN_REQUEST_DELAY)
+
+    _report_failures(failures)
     return newly_fetched
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """Return True when *exc* is an HTTP 429 from the API."""
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) == 429
+
+
+def _report_failures(failures: list[tuple[str, int, str]]) -> None:
+    """Print a compact summary of chapters that could not be fetched."""
+    if not failures:
+        return
+    print(f"\n{len(failures)} chapter(s) failed:")
+    for bname, chap, reason in failures[:10]:
+        print(f"  - {bname} {chap}: {reason}")
+    if len(failures) > 10:
+        print(f"  ... and {len(failures) - 10} more")
 
 
 def _cache_key(

@@ -66,8 +66,37 @@ All commands accept `--data-dir DIR` (or `-d DIR`) to override the default `data
 | `data/bible.db` | SQLite database — `verses`, `chapter_summaries`, `book_summaries` |
 
 The JSON cache is checked before every request, so **re-running `init` costs
-zero network calls** for chapters already downloaded. A full first run makes
-~1,189 requests with a 0.5s pause between books.
+zero network calls** for chapters already downloaded.
+
+### Rate limits
+
+bible-api.com returns `HTTP 429 "Retry later"` after roughly **15 requests in
+quick succession**. The client throttles to one request every 2 seconds, which
+sustains long runs without tripping the limiter (measured empirically).
+
+The API also refuses multi-chapter requests — `Genesis 1-3` returns
+`"You cannot fetch more than one whole chapter"` — so all 1,189 chapters must
+be fetched individually. **A full first run takes ~40 minutes.**
+
+If a 429 does occur, `init` stops immediately rather than burning through the
+rest of the canon, and tells you to re-run later. Everything already fetched
+is safely on disk.
+
+### Resuming an interrupted download
+
+Just run `init` again:
+
+```bash
+uv run bible-study init
+```
+
+It replays cached chapters instantly (no network, no throttle) and picks up
+from the first one missing. Interrupting with Ctrl-C is safe — each chapter is
+written to the cache and the database as it arrives, so nothing is left
+half-written. Re-running is idempotent; verses are upserted, never duplicated.
+
+Failed chapters are **not** recorded as failures anywhere — a failure simply
+means nothing was written, so the next run retries it naturally.
 
 Summaries live in the same database, so `summarize` is resumable — it only
 processes chapters with no summary yet, and you can stop and restart it

@@ -177,7 +177,7 @@ class TestConstants:
 
     def test_max_retries_defined(self):
         from bible_study.api import MAX_RETRIES
-        assert MAX_RETRIES == 3
+        assert MAX_RETRIES == 5
 
     def test_request_timeout_defined(self):
         from bible_study.api import REQUEST_TIMEOUT
