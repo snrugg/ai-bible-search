@@ -1,0 +1,34 @@
+# Bible Study — Prompt Templates
+# Edit these YAML templates to customize how summaries are generated.
+# Placeholders like {book_name}, {chapter_number}, and {chapter_text}
+# are replaced at runtime with actual values.
+
+chapter_summary: |
+  Summarize the following chapter of the King James Version (KJV) Bible.
+
+  Book: {book_name}
+  Chapter: {chapter_number}
+
+  Guidelines:
+  - Identify key events, themes, and any significant people or places mentioned.
+  - Capture the main narrative or teaching in 1–2 paragraphs.
+  - Keep the tone neutral and informative — like a study guide entry.
+  - Do NOT add commentary, interpretation, or external references.
+
+  Text:
+  {chapter_text}
+
+  Provide your summary below.
+
+book_summary: |
+  Create an aggregate summary of the entire book of {book_name} from the King James Version (KJV) Bible.
+
+  This book contains {chapter_count} chapters in total.
+
+  Guidelines:
+  - Synthesize the main narrative arc across all chapters.
+  - Highlight major themes, key figures, and theological concepts.
+  - Write in 2–3 paragraphs: overview, key events/narrative, significance.
+  - Keep the tone neutral and informative — like a study guide entry.
+
+  Provide your summary below.
