@@ -19,7 +19,9 @@ def serve(port: int = _DEFAULT_PORT) -> None:
         conn = sqlite3.connect(str(db_path))
     else:
         conn = None
-    handler = _SQLiteHandler(conn)
+    def handler(*args, **kwargs):
+        return _SQLiteHandler(*args, conn=conn, **kwargs)
+
     server = HTTPServer(("127.0.0.1", port), handler)
     webbrowser.open(f"http://localhost:{port}")
     try:

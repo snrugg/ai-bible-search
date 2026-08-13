@@ -62,8 +62,7 @@ def summarize(data_dir: Path | None) -> None:
     db_path = data_dir / "bible.db"
     init_db(db_path)
 
-    books = book_names()
-    generate_all_chapters(db_path, books)
+    generate_all_chapters(db_path)
     click.echo("Done!")
 
 
@@ -87,29 +86,24 @@ def summarize_book_cmd(data_dir: Path | None) -> None:
 
 @cli.command()
 @_data_dir_option
-def view(data_dir: Path | None, port: int = 8080) -> None:
+@click.option("--port", "-p", type=int, default=8080, help="Port for the viewer.")
+def view(data_dir: Path | None, port: int) -> None:
     """Launch a lightweight browser to view verses and summaries."""
-    data_dir = Path(data_dir) if data_dir else Path("data")
-    db_path = str(data_dir / "bible.db")
-    browse(port=port, db_path=db_path)
+    browse(port=port)
 
 
 @cli.command()
 @_data_dir_option
 def status(data_dir: Path | None) -> None:
     """Show indexing and summarization progress."""
-    from bible_study.db import get_chapter_progress, init_db, verse_count
-    from bible_study.indexer import total_chapters
+    from bible_study.db import get_chapter_progress, init_db
+    from bible_study.indexer import book_names
 
     data_dir = Path(data_dir) if data_dir else Path("data")
     db_path = data_dir / "bible.db"
     init_db(db_path)
 
-    total = total_chapters()
-    books = []
-    for b in book_names():
-        books.append(b)
-    total, summed = get_chapter_progress(db_path, books)
+    total, summed = get_chapter_progress(db_path, book_names())
     click.echo(f"Total chapters: {total}")
     click.echo(f"Summarized:     {summed}")
     click.echo(f"Remaining:     {total - summed}")

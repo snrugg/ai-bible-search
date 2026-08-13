@@ -184,6 +184,7 @@ def render_chapter_markdown(
     book_info = _get_book(book_name)
     if book_info is None:
         abbrev = "UNK"
+        total_chapters = chapter_num
     else:
         abbrev = book_info["abbrev"]
         total_chapters = book_info["chapter_count"]
