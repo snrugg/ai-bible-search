@@ -33,7 +33,8 @@ class TestCliGroup:
     def test_all_six_commands_registered(self):
         from bible_study.cli import cli
         assert set(cli.commands) == {
-            "init", "summarize", "summarize-book", "view", "status", "config-edit",
+            "init", "summarize", "summarize-book", "view", "status",
+            "export", "config-edit",
         }
 
 

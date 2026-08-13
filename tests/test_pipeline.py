@@ -237,3 +237,43 @@ class TestConfigDiscovery:
         monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
         (tmp_path / "config.yaml").write_text("chapter_summary: |\n  LOCAL\n")
         assert load_config()["chapter_summary"].strip() == "LOCAL"
+
+
+class TestExportCommand:
+    """bible-study export."""
+
+    def test_export_reports_zero_for_empty_db(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["export"])
+            assert result.exit_code == 0
+            assert "Exported 0 chapters across 0 books" in result.output
+
+    def test_export_writes_chapter_files(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import init_db, save_summary
+        with runner.isolated_filesystem():
+            db = Path("data/bible.db")
+            init_db(db)
+            save_summary(db, "Genesis", 1, "A summary of Genesis 1.")
+            result = runner.invoke(cli, ["export"])
+            assert result.exit_code == 0
+            assert "Exported 1 chapters across 1 books" in result.output
+            chapter = Path("output/gen/chapter-01.md")
+            assert chapter.exists()
+            assert "A summary of Genesis 1." in chapter.read_text()
+
+    def test_export_honours_custom_output_dir(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import init_db, save_summary
+        with runner.isolated_filesystem():
+            db = Path("data/bible.db")
+            init_db(db)
+            save_summary(db, "Genesis", 1, "Summary text.")
+            result = runner.invoke(cli, ["export", "-o", "docs"])
+            assert result.exit_code == 0
+            assert (Path("docs") / "index.md").exists()
+
+    def test_export_is_registered(self):
+        from bible_study.cli import cli
+        assert "export" in cli.commands

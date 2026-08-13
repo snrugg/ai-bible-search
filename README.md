@@ -56,6 +56,26 @@ uv run bible-study export
 
 All commands accept `--data-dir DIR` (or `-d DIR`) to override the default `data/` location.
 
+### What gets written to disk
+
+`init` writes two things under `data/`, both persistent:
+
+| Path | Contents |
+|------|----------|
+| `data/api-cache/<book>-<chapter>.json` | Raw API response, one file per chapter (~1,189 files) |
+| `data/bible.db` | SQLite database — `verses`, `chapter_summaries`, `book_summaries` |
+
+The JSON cache is checked before every request, so **re-running `init` costs
+zero network calls** for chapters already downloaded. A full first run makes
+~1,189 requests with a 0.5s pause between books.
+
+Summaries live in the same database, so `summarize` is resumable — it only
+processes chapters with no summary yet, and you can stop and restart it
+freely. Per-chapter progress is appended to `data/SUMMARY_PROGRESS.md`.
+
+To force a fresh download, delete `data/api-cache/`. To start completely
+over, delete `data/`.
+
 ## CLI Reference
 
 | Command | Description |
@@ -65,21 +85,74 @@ All commands accept `--data-dir DIR` (or `-d DIR`) to override the default `data
 | `bible-study summarize-book` | Generate book-level aggregate summaries |
 | `bible-study view [--port PORT]` | Launch browser viewer on specified port |
 | `bible-study status` | Show indexing/summarization progress |
+| `bible-study export [-o DIR]` | Export summaries as linked markdown (default `output/`) |
 | `bible-study config-edit` | Open config.yaml in default editor |
+
+Every command also accepts `--data-dir DIR` / `-d DIR`.
 
 ## Customising Prompts
 
-Edit `config.yaml` to change how Ollama generates summaries. Two templates are available:
+All prompts live in `config.yaml` at the repo root — **no code change is
+needed**. `prompts.py` reads the file at runtime and substitutes `{...}`
+placeholders by plain text replacement.
 
-```yaml
-chapter_summary: |
-  Summarize the following chapter of the King James Version (KJV) Bible.
-  ...
-book_summary: |
-  Create an aggregate summary of the entire book of {book_name}...
+Two templates are used:
+
+| Key | Used by | Placeholders |
+|-----|---------|--------------|
+| `chapter_summary` | `summarize` | `{book_name}`, `{chapter_number}`, `{chapter_text}` |
+| `book_summary` | `summarize-book` | `{book_name}`, `{chapter_count}` |
+
+Any placeholder you leave out is simply left alone; unknown keys are ignored.
+
+### Where the config is found
+
+`load_config()` resolves in this order, first match wins:
+
+1. `$BIBLE_STUDY_CONFIG` — an explicit path, if set
+2. `./config.yaml` — relative to the current working directory
+3. `config.yaml` at the repo root
+
+So you can keep experiment variants side by side:
+
+```bash
+BIBLE_STUDY_CONFIG=prompts/terse.yaml uv run bible-study summarize
 ```
 
-Variables (`{book_name}`, `{chapter_number}`, `{chapter_text}`, `{chapter_count}`) are automatically substituted at runtime.
+### Seeing the prompt
+
+To print the exact text sent to Ollama:
+
+```bash
+uv run python -c "
+from bible_study.prompts import load_config, build_chapter_prompt
+print(build_chapter_prompt(load_config(), 'Genesis', '<chapter text>', 1))
+"
+```
+
+Prompts are also stored per chapter in the `chapter_summaries.prompt_used`
+column, so you can audit exactly what produced any given summary.
+
+### Re-running after a prompt change
+
+`summarize` skips chapters that already have a summary. To regenerate with a
+new prompt, clear the old ones first:
+
+```bash
+sqlite3 data/bible.db "DELETE FROM chapter_summaries;"   # all chapters
+sqlite3 data/bible.db "DELETE FROM chapter_summaries WHERE book_name='Genesis';"
+```
+
+Verse text is untouched, so no re-download is needed.
+
+### Changing the model
+
+The model is set in `src/bible_study/ollama.py`:
+
+```python
+MODEL = 'qwen3.6:35b-a3b-nvfp4'
+OLLAMA_BASE = 'http://localhost:11434'
+```
 
 ## Project Structure
 

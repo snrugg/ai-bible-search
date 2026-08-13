@@ -129,6 +129,30 @@ def status(data_dir: Path | None) -> None:
 
 
 @cli.command()
+@_data_dir_option
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(file_okay=False, dir_okay=True),
+    default="output",
+    help="Directory to write markdown files into.",
+)
+def export(data_dir: Path | None, output_dir: str) -> None:
+    """Export every stored summary as linked markdown files."""
+    from bible_study.db import init_db
+    from bible_study.summary import export_markdowns
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    init_db(db_path)
+
+    out = Path(output_dir)
+    results = export_markdowns(db_path, output_dir=out)
+    total = sum(results.values())
+    click.echo(f"Exported {total} chapters across {len(results)} books to {out}.")
+
+
+@cli.command()
 def config_edit() -> None:
     """Open config.yaml in the default text editor."""
     import webbrowser
