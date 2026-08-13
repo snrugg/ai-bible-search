@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,19 @@ def load_config(path: str | None = None) -> dict[str, str]:
     """
     if path is not None:
         return _load_file(Path(path))
-    # Walk up from this file looking for config.yaml
+
+    # An explicit override always wins, so the config can live anywhere.
+    env_path = os.environ.get("BIBLE_STUDY_CONFIG")
+    if env_path:
+        return _load_file(Path(env_path))
+
+    # Otherwise: cwd first, then walk up from this file to the repo root.
+    here = Path(__file__).resolve().parent
     candidates = [
         Path("config.yaml"),
-        Path(__file__).parent.parent / "config.yaml",
-        Path(__file__).parent / "config.yaml",
+        here.parent.parent / "config.yaml",   # repo root (src/bible_study -> ..)
+        here.parent / "config.yaml",          # src/
+        here / "config.yaml",                 # packaged alongside the module
     ]
     for candidate in candidates:
         resolved = candidate.resolve()

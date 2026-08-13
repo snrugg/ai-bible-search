@@ -216,7 +216,18 @@ class TestApiRemainingBranches:
         (cache / "genesis-1.json").write_text(json.dumps(payload))
         mock_get = mocker.patch("bible_study.api.requests.get")
         result = save_chapter("Genesis", 1, cache_dir=cache)
-        assert result == payload
+        # A legacy bare-list cache is normalised to the mapping shape.
+        assert result == {"verses": payload}
+        mock_get.assert_not_called()
+
+    def test_save_chapter_reads_mapping_shaped_cache(self, tmp_path, mocker):
+        from bible_study.api import save_chapter
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        payload = {"verses": [{"verse": 1, "text": "cached text"}]}
+        (cache / "genesis-1.json").write_text(json.dumps(payload))
+        mock_get = mocker.patch("bible_study.api.requests.get")
+        assert save_chapter("Genesis", 1, cache_dir=cache) == payload
         mock_get.assert_not_called()
 
 

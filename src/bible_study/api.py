@@ -22,7 +22,15 @@ BETWEEN_REQUEST_DELAY = 0.5
 def fetch_chapter(
     book_name: str, chapter_num: int, timeout: int = REQUEST_TIMEOUT,
 ) -> list[dict[str, Any]]:
-    """Fetch a single chapter from bible-api.com and return parsed verses."""
+    """Fetch a single chapter from bible-api.com and return parsed verses.
+
+    For single-chapter books (Obadiah, Philemon, 2/3 John, Jude) the API
+    reads a trailing ``1`` as *verse* 1 rather than chapter 1, returning
+    only one verse.  Request those by bare book name instead.
+    """
+    if _is_single_chapter_book(book_name):
+        return _fetch_single_chapter_book(book_name, chapter_num, timeout)
+
     slug = quote(book_name) + f"%20{chapter_num}"
     url = f"{BASE_URL}/{slug}"
     params = {"format": "json", "translation": "kjv"}
@@ -53,7 +61,11 @@ def save_chapter(
 
     if key.exists():
         with key.open("r") as fh:
-            return cast(dict[str, Any], json.load(fh))
+            cached = json.load(fh)
+        # Older caches stored a bare verse list; newer ones a mapping.
+        if isinstance(cached, list):
+            return {"verses": cached}
+        return cast(dict[str, Any], cached)
 
     data = fetch_chapter(book_name, chapter_num)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -65,8 +77,15 @@ def save_chapter(
 def download_all(
     book_names_list: list[str] | None = None,
     cache_dir: Path | None = None,
+    db_path: Path | None = None,
 ) -> list[tuple[str, int]]:
-    """Download every chapter across books to the API cache."""
+    """Download every chapter across books to the API cache.
+
+    When *db_path* is given, each fetched chapter's verses are also
+    written into the ``verses`` table so the summarise step has text to
+    work with.  Chapters already present in the JSON cache are read from
+    disk instead of re-fetched, so re-running this is cheap.
+    """
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -74,14 +93,25 @@ def download_all(
         from bible_study.indexer import book_names as _bn
         book_names_list = _bn()
 
+    if db_path is not None:
+        from bible_study.db import upsert_verses as _upsert
+    else:
+        _upsert = None
+
     newly_fetched: list[tuple[str, int]] = []
 
     for bname in book_names_list:
-        last_cached = _last_cached_chapter(bname, cache_dir)
         chapters = get_chapters_for_book(bname)
         for chap in chapters:
             try:
-                save_chapter(bname, chap, cache_dir=cache_dir)
+                payload = save_chapter(bname, chap, cache_dir=cache_dir)
+                if _upsert is not None:
+                    verses = [
+                        (v["verse"], v["text"])
+                        for v in payload.get("verses", [])
+                    ]
+                    if verses:
+                        _upsert(db_path, bname, chap, verses)
                 newly_fetched.append((bname, chap))
             except Exception:   # noqa: BLE001
                 print(f"Warning: failed to fetch {bname} {chap}")
@@ -122,6 +152,58 @@ def _parse_verses(data: dict[str, Any]) -> list[dict[str, str]]:
     """Extract a clean verses list from the bible-api.com response."""
     verses = data.get("verses", [])
     return [{"verse": v["verse"], "text": v["text"].strip()} for v in verses]
+
+
+#: Verse counts for the five single-chapter KJV books.  The API rejects a
+#: verse range that overshoots the real count, so these must be exact.
+SINGLE_CHAPTER_VERSE_COUNTS: dict[str, int] = {
+    "Obadiah": 21,
+    "Philemon": 25,
+    "2 John": 13,
+    "3 John": 14,
+    "Jude": 25,
+}
+
+
+def _fetch_single_chapter_book(
+    book_name: str, chapter_num: int, timeout: int,
+) -> list[dict[str, Any]]:
+    """Fetch a one-chapter book via an explicit verse range.
+
+    ``/Obadiah 1`` is read by the API as Obadiah 1:1, so it returns a
+    single verse.  Requesting ``1:1-<last>`` returns the whole chapter.
+    The API 404s on a range that overshoots, so fall back to probing
+    downward for books whose count we do not have recorded.
+    """
+    known = SINGLE_CHAPTER_VERSE_COUNTS.get(book_name)
+    attempts = [known] if known else list(range(40, 0, -1))
+
+    last_error: Exception | None = None
+    for last_verse in attempts:
+        slug = quote(book_name) + f"%20{chapter_num}:1-{last_verse}"
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/{slug}",
+                params={"format": "json", "translation": "kjv"},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            last_error = exc
+            continue
+        return _parse_verses(resp.json())
+
+    if last_error is not None:
+        raise last_error
+    msg = f"Could not fetch {book_name} chapter {chapter_num}"
+    raise RuntimeError(msg)
+
+
+def _is_single_chapter_book(book_name: str) -> bool:
+    """Return True when *book_name* has exactly one chapter."""
+    from bible_study.indexer import get_book as _get_book
+    info = _get_book(book_name)
+    return info is not None and info["chapter_count"] == 1
 
 
 def get_chapters_for_book(book_name: str) -> list[int]:

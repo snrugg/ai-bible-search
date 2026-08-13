@@ -47,22 +47,41 @@ def init(data_dir: Path | None, force: bool) -> None:
     init_db(db_path)
     books = book_names()
     click.echo(f"Indexed {len(books)} books.")
-    fetched = download_all(cache_dir=data_dir / "api-cache")
+    fetched = download_all(cache_dir=data_dir / "api-cache", db_path=db_path)
     click.echo(f"Downloaded {len(fetched)} chapters.")
+
+    from bible_study.db import verse_count
+    click.echo(f"Stored {verse_count(db_path)} verses in {db_path}.")
 
 
 @cli.command()
 @_data_dir_option
 def summarize(data_dir: Path | None) -> None:
     """Generate chapter summaries for all unsummarized chapters."""
-    from bible_study.db import init_db
+    from bible_study.db import get_unsummarized_chapters, init_db
     from bible_study.indexer import book_names
 
     data_dir = Path(data_dir) if data_dir else Path("data")
     db_path = data_dir / "bible.db"
     init_db(db_path)
 
-    generate_all_chapters(db_path)
+    from bible_study.ollama import health_check
+    if not health_check():
+        raise click.ClickException(
+            "Cannot reach Ollama at http://localhost:11434 -- start it first.",
+        )
+
+    pending = get_unsummarized_chapters(db_path, book_names())
+    done = generate_all_chapters(db_path)
+
+    if pending and not done:
+        progress = db_path.parent / "SUMMARY_PROGRESS.md"
+        raise click.ClickException(
+            f"All {len(pending)} chapters failed to summarise. "
+            f"Check that Ollama is running and see {progress} for details.",
+        )
+
+    click.echo(f"Summarised {len(done)} chapters.")
     click.echo("Done!")
 
 
