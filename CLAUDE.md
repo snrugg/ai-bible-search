@@ -39,6 +39,8 @@ Schema is in the `INIT_SQL` string at the top of `db.py`. Add UNIQUE constraints
 
 Every test must call `init_db(db_path)` before touching SQLite tables, and `upsert_verses(...)` to populate data before calling summary functions. Use `mocker.patch("bible_study.ollama.generate", return_value="...")` for Ollama mocks. Never use `from X import Y` inside tests when you need to patch — the patched module attribute must be the target.
 
+**Any CLI test that invokes a command with an Ollama preflight must mock `bible_study.ollama.health_check`** — `summarize`, `embed`, `ask`, and `search` all call it. Without the mock the test passes only where Ollama happens to be running, so it goes green locally and red in CI. Two `TestSummarizeCommand` tests did exactly that and failed on the first CI run. To reproduce a no-Ollama environment locally, clone to a scratch directory and point `ollama.OLLAMA_BASE` at a dead port (`http://localhost:1`) before running the suite.
+
 Vector tests run against the **real** sqlite-vec extension (a declared dependency) but with 4-dimensional toy vectors: `init_vec(db_path, dims=4)`, then `mocker.patch("bible_study.ollama.embed", ...)`. Faking vec0 would test our SQL strings against a mock and prove nothing about the two things most likely to break — whether the DDL parses and whether `k = ?` binds. `rag` tests instead patch `bible_study.vectors.search`, so they need no extension at all.
 
 ### Naming Conventions
@@ -86,7 +88,7 @@ uv run pytest -k "book_summary" --no-cov       # By name pattern
 uv run mutmut run                              # Mutation testing (src/bible_study)
 ```
 
-`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 585 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
+`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 586 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
 
 ## Git Hooks
 

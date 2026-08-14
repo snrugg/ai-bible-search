@@ -1,6 +1,6 @@
 # Bible Study — KJV Index, Summary & Semantic Search
 
-[![tests](https://github.com/GITHUB-USER/bible-study/actions/workflows/tests.yml/badge.svg)](https://github.com/GITHUB-USER/bible-study/actions/workflows/tests.yml)
+[![tests](https://github.com/snrugg/ai-bible-search/actions/workflows/tests.yml/badge.svg)](https://github.com/snrugg/ai-bible-search/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An indexed, summarized, semantically searchable version of the entire King James
@@ -20,7 +20,7 @@ questions from the indexed corpus with citations. Nothing leaves your machine.
 - **YAML-configurable** — prompts, models, and chunking in `config.yaml`, no code changes
 - **Browser viewer** — HTTP server with clickable navigation, search, and ask
 - **Markdown export** — every summary as linked markdown files
-- **Tested** — 585 tests, 99% coverage, enforced by a pre-commit hook
+- **Tested** — 586 tests, 99% coverage, enforced by a pre-commit hook
 
 ## Quick Start
 
@@ -42,7 +42,7 @@ respectively — they are not interchangeable.
 ### Installation
 
 ```bash
-git clone https://github.com/GITHUB-USER/bible-study.git && cd bible-study
+git clone https://github.com/snrugg/ai-bible-search.git && cd ai-bible-search
 uv sync
 git config core.hooksPath .githooks   # enable the pre-commit hook
 ```
@@ -363,7 +363,7 @@ bible-study/
 │     ├── rag.py                        # Retrieve, expand, rank, budget, answer
 │     └── browser.py                    # SQLite-backed HTTP server
 │
-├── tests/                              # 585 tests, all mocked by default
+├── tests/                              # 586 tests, all mocked by default
 │     ├── conftest.py                   # Shared fixtures
 │     ├── test_api.py  test_api_extra.py  test_rate_limit.py
 │     ├── test_db.py   test_indexer.py    test_ollama.py
@@ -419,7 +419,7 @@ uv run mutmut run                              # Mutation testing
 
 `addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare
 `uv run pytest` produces a coverage report and **fails under 90%**. Current
-state: **585 passing, 9 skipped by design** (7 live-I/O integration tests, 2
+state: **586 passing, 9 skipped by design** (7 live-I/O integration tests, 2
 over-the-wire browser tests), **99% coverage**.
 
 Integration tests are skipped with class-level `@pytest.mark.skip`. Run them by
