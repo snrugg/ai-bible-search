@@ -1,5 +1,7 @@
 """Tests for bible_study/indexer -- the canonical 66-book structure."""
 
+import pytest
+
 from bible_study.indexer import (
     BIBLE_BOOKS,
     book_names,
@@ -18,8 +20,20 @@ class TestStructure:
         assert total_books() == 66
 
     def test_total_chapters_is_1189(self):
-        expected = sum(b["chapter_count"] for b in BIBLE_BOOKS)
-        assert total_chapters() == expected
+        # Literal, not a sum of the same table it is checking -- a wrong
+        # chapter_count silently drops that chapter from init/summarize.
+        assert total_chapters() == 1189
+
+    def test_total_chapters_matches_the_table(self):
+        assert total_chapters() == sum(b["chapter_count"] for b in BIBLE_BOOKS)
+
+    @pytest.mark.parametrize(
+        "name, count",
+        [("Genesis", 50), ("Psalms", 150), ("Obadiah", 1), ("Matthew", 28),
+         ("2 Peter", 3), ("3 John", 1), ("Revelation", 22)],
+    )
+    def test_known_chapter_counts(self, name, count):
+        assert get_book(name)["chapter_count"] == count
 
     def test_all_books_have_required_keys(self):
         for book in BIBLE_BOOKS:

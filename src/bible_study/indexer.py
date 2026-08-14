@@ -72,7 +72,7 @@ BIBLE_BOOKS: tuple[dict[str, str | int], ...] = (
     {"name": "Hebrews",           "abbrev": "HEB", "testament": "NT", "chapter_count": 13},
     {"name": "James",             "abbrev": "JAS", "testament": "NT", "chapter_count":  5},
     {"name": "1 Peter",           "abbrev": "1PE", "testament": "NT", "chapter_count":  5},
-    {"name": "2 Peter",           "abbrev": "2PE", "testament": "NT", "chapter_count":  2},
+    {"name": "2 Peter",           "abbrev": "2PE", "testament": "NT", "chapter_count":  3},
     {"name": "1 John",            "abbrev": "1JH", "testament": "NT", "chapter_count":  5},
     {"name": "2 John",            "abbrev": "2JH", "testament": "NT", "chapter_count":  1},
     {"name": "3 John",            "abbrev": "3JH", "testament": "NT", "chapter_count":  1},
