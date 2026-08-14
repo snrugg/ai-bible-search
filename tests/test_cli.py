@@ -30,11 +30,11 @@ class TestCliGroup:
         result = runner.invoke(cli, [])
         assert result.exit_code in (0, 2)
 
-    def test_all_six_commands_registered(self):
+    def test_all_commands_registered(self):
         from bible_study.cli import cli
         assert set(cli.commands) == {
             "init", "summarize", "summarize-book", "view", "status",
-            "export", "config-edit",
+            "export", "clear-summaries", "clear-book-summaries", "config-edit",
         }
 
 
@@ -172,6 +172,228 @@ class TestStatusCommand:
             assert "Total chapters: 2" in result.output
             assert "Summarized:     1" in result.output
             assert "Remaining:     1" in result.output
+
+
+class TestClearSummariesCommand:
+    """bible-study clear-summaries."""
+
+    def _seed(self):
+        """Create a db with two summarised books; returns its path."""
+        from pathlib import Path
+
+        from bible_study.db import (
+            init_db,
+            save_book_summary,
+            save_summary,
+            upsert_verses,
+        )
+        db_path = Path("data/bible.db")
+        init_db(db_path)
+        for book, abbrev in (("Genesis", "GEN"), ("Exodus", "EXO")):
+            for chap in (1, 2):
+                upsert_verses(db_path, book, chap, [(1, "verse text")])
+                save_summary(db_path, book, chap, f"{book} {chap} summary")
+            save_book_summary(db_path, book, abbrev, f"{book} overview")
+        return db_path
+
+    def test_clears_everything_with_yes_flag(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_progress, get_saved_books
+        from bible_study.indexer import book_names
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-summaries", "--yes"])
+            assert result.exit_code == 0
+            assert "Cleared 4 chapter summaries and 2 book summaries" in result.output
+            assert get_chapter_progress(db_path, book_names())[1] == 0
+            assert get_saved_books(db_path) == []
+
+    def test_keeps_verse_text(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import verse_count
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            runner.invoke(cli, ["clear-summaries", "--yes"])
+            assert verse_count(db_path) == 4
+
+    def test_book_option_scopes_the_delete(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_summaries_for_book, get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-summaries", "--book", "genesis", "-y"])
+            assert result.exit_code == 0
+            assert get_chapter_summaries_for_book(db_path, "Genesis") == []
+            assert len(get_chapter_summaries_for_book(db_path, "Exodus")) == 2
+            assert get_saved_books(db_path) == ["Exodus"]
+
+    def test_scope_chapters_leaves_book_summaries(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(
+                cli, ["clear-summaries", "--scope", "chapters", "-y"],
+            )
+            assert "Cleared 4 chapter summaries and 0 book summaries" in result.output
+            assert len(get_saved_books(db_path)) == 2
+
+    def test_scope_books_leaves_chapter_summaries(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_summaries_for_book, get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-summaries", "--scope", "books", "-y"])
+            assert "Cleared 0 chapter summaries and 2 book summaries" in result.output
+            assert get_saved_books(db_path) == []
+            assert len(get_chapter_summaries_for_book(db_path, "Genesis")) == 2
+
+    def test_prompts_for_confirmation_and_aborts(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_summaries_for_book
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-summaries"], input="n\n")
+            assert result.exit_code != 0
+            assert "Delete chapter and book summaries for all 66 books?" in result.output
+            assert len(get_chapter_summaries_for_book(db_path, "Genesis")) == 2
+
+    def test_confirmation_accepted_deletes(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_summaries_for_book
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-summaries"], input="y\n")
+            assert result.exit_code == 0
+            assert get_chapter_summaries_for_book(db_path, "Genesis") == []
+
+    def test_rejects_unknown_book(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["clear-summaries", "--book", "nope", "-y"])
+            assert result.exit_code != 0
+            assert "Unknown book: nope" in result.output
+
+    def test_errors_when_database_missing(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["clear-summaries", "-y"])
+            assert result.exit_code != 0
+            assert "nothing to clear" in result.output
+
+    def test_honours_data_dir(self, runner, tmp_path):
+        from bible_study.cli import cli
+        from bible_study.db import init_db, save_summary
+        db_path = tmp_path / "alt" / "bible.db"
+        init_db(db_path)
+        save_summary(db_path, "Genesis", 1, "a summary")
+        result = runner.invoke(
+            cli, ["clear-summaries", "--data-dir", str(tmp_path / "alt"), "-y"],
+        )
+        assert result.exit_code == 0
+        assert "Cleared 1 chapter summaries" in result.output
+
+
+class TestClearBookSummariesCommand:
+    """bible-study clear-book-summaries."""
+
+    def _seed(self):
+        """Create a db with two summarised books; returns its path."""
+        from pathlib import Path
+
+        from bible_study.db import (
+            init_db,
+            save_book_summary,
+            save_summary,
+            upsert_verses,
+        )
+        db_path = Path("data/bible.db")
+        init_db(db_path)
+        for book, abbrev in (("Genesis", "GEN"), ("Exodus", "EXO")):
+            for chap in (1, 2):
+                upsert_verses(db_path, book, chap, [(1, "verse text")])
+                save_summary(db_path, book, chap, f"{book} {chap} summary")
+            save_book_summary(db_path, book, abbrev, f"{book} overview")
+        return db_path
+
+    def test_clears_book_summaries_with_yes_flag(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-book-summaries", "--yes"])
+            assert result.exit_code == 0
+            assert "Cleared 2 book summaries." in result.output
+            assert get_saved_books(db_path) == []
+
+    def test_keeps_chapter_summaries_and_verses(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_chapter_summaries_for_book, verse_count
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            runner.invoke(cli, ["clear-book-summaries", "-y"])
+            assert len(get_chapter_summaries_for_book(db_path, "Genesis")) == 2
+            assert verse_count(db_path) == 4
+
+    def test_book_option_scopes_the_delete(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(
+                cli, ["clear-book-summaries", "--book", "genesis", "-y"],
+            )
+            assert result.exit_code == 0
+            assert get_saved_books(db_path) == ["Exodus"]
+
+    def test_prompts_for_confirmation_and_aborts(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-book-summaries"], input="n\n")
+            assert result.exit_code != 0
+            assert "Delete book summaries for all 66 books?" in result.output
+            assert len(get_saved_books(db_path)) == 2
+
+    def test_confirmation_accepted_deletes(self, runner):
+        from bible_study.cli import cli
+        from bible_study.db import get_saved_books
+        with runner.isolated_filesystem():
+            db_path = self._seed()
+            result = runner.invoke(cli, ["clear-book-summaries"], input="y\n")
+            assert result.exit_code == 0
+            assert get_saved_books(db_path) == []
+
+    def test_rejects_unknown_book(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(
+                cli, ["clear-book-summaries", "--book", "nope", "-y"],
+            )
+            assert result.exit_code != 0
+            assert "Unknown book: nope" in result.output
+
+    def test_errors_when_database_missing(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["clear-book-summaries", "-y"])
+            assert result.exit_code != 0
+            assert "nothing to clear" in result.output
+
+    def test_honours_data_dir(self, runner, tmp_path):
+        from bible_study.cli import cli
+        from bible_study.db import init_db, save_book_summary
+        db_path = tmp_path / "alt" / "bible.db"
+        init_db(db_path)
+        save_book_summary(db_path, "Genesis", "GEN", "an overview")
+        result = runner.invoke(
+            cli, ["clear-book-summaries", "--data-dir", str(tmp_path / "alt"), "-y"],
+        )
+        assert result.exit_code == 0
+        assert "Cleared 1 book summaries." in result.output
 
 
 class TestConfigEditCommand:

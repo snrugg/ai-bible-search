@@ -162,6 +162,121 @@ def export(data_dir: Path | None, output_dir: str) -> None:
 
 
 @cli.command()
+@_data_dir_option
+@click.option(
+    "--book",
+    "-b",
+    default=None,
+    help="Only clear summaries for this book (default: every book).",
+)
+@click.option(
+    "--scope",
+    type=click.Choice(["all", "chapters", "books"]),
+    default="all",
+    help="Which summaries to clear: chapter-level, book-level, or both.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt.",
+)
+def clear_summaries(
+    data_dir: Path | None, book: str | None, scope: str, yes: bool,
+) -> None:
+    """Delete stored summaries so they can be regenerated.
+
+    Verse text is never touched -- only summaries are removed, so
+    `summarize` will re-generate them without re-downloading anything.
+    """
+    from bible_study.db import (
+        clear_book_summaries,
+        clear_chapter_summaries,
+        init_db,
+    )
+    from bible_study.indexer import get_book
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        raise click.ClickException(f"No database at {db_path} -- nothing to clear.")
+    init_db(db_path)
+
+    book_name = None
+    if book is not None:
+        book_info = get_book(book)
+        if book_info is None:
+            raise click.ClickException(f"Unknown book: {book}")
+        book_name = book_info["name"]
+
+    target = book_name or "all 66 books"
+    what = {
+        "all": "chapter and book summaries",
+        "chapters": "chapter summaries",
+        "books": "book summaries",
+    }[scope]
+    if not yes:
+        click.confirm(f"Delete {what} for {target}?", abort=True)
+
+    chapters = books = 0
+    if scope in ("all", "chapters"):
+        chapters = clear_chapter_summaries(db_path, book_name)
+    if scope in ("all", "books"):
+        books = clear_book_summaries(db_path, book_name)
+
+    click.echo(f"Cleared {chapters} chapter summaries and {books} book summaries.")
+
+
+@cli.command()
+@_data_dir_option
+@click.option(
+    "--book",
+    "-b",
+    default=None,
+    help="Only clear the summary for this book (default: every book).",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt.",
+)
+def clear_book_summaries_cmd(
+    data_dir: Path | None, book: str | None, yes: bool,
+) -> None:
+    """Delete book-level summaries so they can be regenerated.
+
+    Chapter summaries and verse text are left alone, so `summarize-book`
+    can re-aggregate immediately.  Equivalent to
+    `clear-summaries --scope books`.
+    """
+    from bible_study.db import clear_book_summaries, init_db
+    from bible_study.indexer import get_book
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        raise click.ClickException(f"No database at {db_path} -- nothing to clear.")
+    init_db(db_path)
+
+    book_name = None
+    if book is not None:
+        book_info = get_book(book)
+        if book_info is None:
+            raise click.ClickException(f"Unknown book: {book}")
+        book_name = book_info["name"]
+
+    target = book_name or "all 66 books"
+    if not yes:
+        click.confirm(f"Delete book summaries for {target}?", abort=True)
+
+    books = clear_book_summaries(db_path, book_name)
+    click.echo(f"Cleared {books} book summaries.")
+
+
+@cli.command()
 def config_edit() -> None:
     """Open config.yaml in the default text editor."""
     import webbrowser

@@ -130,3 +130,50 @@ class TestProgress:
         total, summed = get_chapter_progress(path, books)
         assert total == 1
         assert summed == 1
+
+
+class TestClearSummaries:
+
+    def _seed(self, path):
+        for book, abbrev in (("Genesis", "GEN"), ("Exodus", "EXO")):
+            for chap in (1, 2):
+                upsert_verses(path, book, chap, [(1, "verse text")])
+                save_summary(path, book, chap, f"{book} {chap}")
+            save_book_summary(path, book, abbrev, f"{book} overview")
+
+    def test_clear_chapter_summaries_removes_all(self, db_path):
+        from bible_study.db import clear_chapter_summaries
+        self._seed(db_path)
+        assert clear_chapter_summaries(db_path) == 4
+        assert get_chapter_summaries_for_book(db_path, "Genesis") == []
+        assert get_chapter_summaries_for_book(db_path, "Exodus") == []
+
+    def test_clear_chapter_summaries_scoped_to_book(self, db_path):
+        from bible_study.db import clear_chapter_summaries
+        self._seed(db_path)
+        assert clear_chapter_summaries(db_path, "Genesis") == 2
+        assert get_chapter_summaries_for_book(db_path, "Genesis") == []
+        assert len(get_chapter_summaries_for_book(db_path, "Exodus")) == 2
+
+    def test_clear_chapter_summaries_keeps_verses(self, db_path):
+        from bible_study.db import clear_chapter_summaries
+        self._seed(db_path)
+        clear_chapter_summaries(db_path)
+        assert verse_count(db_path) == 4
+
+    def test_clear_book_summaries_removes_all(self, db_path):
+        from bible_study.db import clear_book_summaries, get_saved_books
+        self._seed(db_path)
+        assert clear_book_summaries(db_path) == 2
+        assert get_saved_books(db_path) == []
+
+    def test_clear_book_summaries_scoped_to_book(self, db_path):
+        from bible_study.db import clear_book_summaries, get_saved_books
+        self._seed(db_path)
+        assert clear_book_summaries(db_path, "Genesis") == 1
+        assert get_saved_books(db_path) == ["Exodus"]
+
+    def test_clearing_empty_tables_returns_zero(self, db_path):
+        from bible_study.db import clear_book_summaries, clear_chapter_summaries
+        assert clear_chapter_summaries(db_path) == 0
+        assert clear_book_summaries(db_path, "Genesis") == 0

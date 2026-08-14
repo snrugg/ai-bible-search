@@ -179,6 +179,56 @@ def save_book_summary(
         conn.commit()
 
 
+def get_book_summary(path: Path, book_name: str) -> str | None:
+    """Return the stored book-level summary, or None if missing."""
+    with sqlite3.connect(str(path)) as conn:
+        cursor = conn.execute(
+              "SELECT summary FROM book_summaries WHERE book_name=?",
+              (book_name,),
+          )
+        row = cursor.fetchone()
+        return row[0] if row is not None else None
+
+
+def get_stored_chapters(path: Path, book_name: str) -> list[int]:
+    """Return chapter numbers that have verse text stored, in order."""
+    with sqlite3.connect(str(path)) as conn:
+        cursor = conn.execute(
+              "SELECT DISTINCT chapter FROM verses "
+              "WHERE book_name=? ORDER BY chapter",
+              (book_name,),
+          )
+        return [row[0] for row in cursor.fetchall()]
+
+
+def clear_chapter_summaries(path: Path, book_name: str | None = None) -> int:
+    """Delete chapter summaries (all, or just one book's). Returns row count."""
+    with sqlite3.connect(str(path)) as conn:
+        if book_name is not None:
+            cursor = conn.execute(
+                  "DELETE FROM chapter_summaries WHERE book_name=?",
+                  (book_name,),
+              )
+        else:
+            cursor = conn.execute("DELETE FROM chapter_summaries")
+        conn.commit()
+        return cursor.rowcount
+
+
+def clear_book_summaries(path: Path, book_name: str | None = None) -> int:
+    """Delete book-level summaries (all, or just one book's). Returns row count."""
+    with sqlite3.connect(str(path)) as conn:
+        if book_name is not None:
+            cursor = conn.execute(
+                  "DELETE FROM book_summaries WHERE book_name=?",
+                  (book_name,),
+              )
+        else:
+            cursor = conn.execute("DELETE FROM book_summaries")
+        conn.commit()
+        return cursor.rowcount
+
+
 def get_all_book_names(path: Path) -> list[str]:
     """Return distinct book names that have verses stored."""
     with sqlite3.connect(str(path)) as conn:
