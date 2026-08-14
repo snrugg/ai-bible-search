@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An indexed, summarized version of the entire KJV Bible (66 books, ~1,189 chapters). Fetches text from bible-api.com, generates chapter summaries via local Ollama (model set by `ollama_model` in `config.yaml`, defaulting to `qwen3.6:35b-a3b-nvfp4`), stores everything in SQLite, and provides an HTTP browser viewer. Built with Python 3.14, uv package management, and a hatchling build backend.
+An indexed, summarized version of the entire KJV Bible (66 books, ~1,189 chapters). Fetches text from bible-api.com, generates chapter summaries via local Ollama (model set by `ollama_model` in `config.yaml`, defaulting to `qwen3.6:35b-a3b-nvfp4`), stores everything in SQLite, indexes verses and summaries into a sqlite-vec vector database for semantic search and grounded question answering, and provides an HTTP browser viewer. Built with Python 3.14, uv package management, and a hatchling build backend.
 
 ## Key Directories
 
 - `src/bible_study/` — All production code
 - `tests/` — Unit tests (all mocked); `tests/integration/` — live I/O (skipped)
-- `config.yaml` — User-editable prompt templates
-- `data/` — SQLite database created at runtime
+- `config.yaml` — User-editable prompt templates, model names, and chunking settings
+- `data/` — SQLite database created at runtime; git-ignored, since the vector index pushes it past 80 MB
 
 ## Coding Standards
 
@@ -31,6 +31,8 @@ All DB functions open/close connections within the function (context managers). 
 
 Every test must call `init_db(db_path)` before touching SQLite tables, and `upsert_verses(...)` to populate data before calling summary functions. Use `mocker.patch("bible_study.ollama.generate", return_value="...")` for Ollama mocks. Never use `from X import Y` inside tests when you need to patch — the patched module attribute must be the target.
 
+Vector tests run against the **real** sqlite-vec extension (a declared dependency) but with 4-dimensional toy vectors: `init_vec(db_path, dims=4)`, then `mocker.patch("bible_study.ollama.embed", ...)`. Faking vec0 would test our SQL strings against a mock and prove nothing about the two things most likely to break — whether the DDL parses and whether `k = ?` binds. `rag` tests instead patch `bible_study.vectors.search`, so they need no extension at all.
+
 ### Naming Conventions
 
 - Functions: `snake_case`
@@ -43,17 +45,19 @@ Every test must call `init_db(db_path)` before touching SQLite tables, and `upse
 ## Architecture Summary
 
 ```
-cli.py ──▶ summary.py ──▶ ollama.py (local LLM)
-                    │       db.py (SQLite storage)
-                    │       api.py (bible-api.com fetcher)
-                    │       prompts.py (YAML template loader)
+cli.py ──▶ summary.py ──▶ ollama.py (local LLM: generate + embed)
+           rag.py     ──▶ db.py (SQLite storage)
+           vectors.py ──▶ api.py (bible-api.com fetcher)
+                          prompts.py (YAML template loader)
 ```
 
 - `init`: downloads KJV via `api.download_all()` → SQLite
 - `summarize`: iterates unsummarized chapters → Ollama → stores in DB
 - `summarize-book`: aggregates book-level summaries from chapter summaries. The stored chapter summaries are concatenated as `Chapter N: <summary>` and passed into the `{chapter_summaries}` placeholder of the `book_summary` template, so the model summarises your generated text rather than writing from memory
-- `view`: starts HTTP server backed by SQLite. Routes: `/` (book index with per-book progress), `/book/<slug>` (chapter grid + book summary), `/book/<slug>/<n>` (chapter summary + KJV verses). Slugs are lowercase with hyphens (`1-samuel`); `--data-dir` selects the database
-- `status`: shows progress (total vs summarized chapters)
+- `embed`: chunks verses and summaries into `chunks`, then embeds every stale chunk into the sqlite-vec index. Incremental — re-running embeds only what changed. `--rebuild` discards existing vectors, `--limit` is a smoke test
+- `ask "question"`: retrieves across all three tiers, expands, budgets, and makes one `generate()` call. `-k` sets verse hits (summary tiers scale down from it); `--no-show-sources` hides the citation list
+- `view`: starts HTTP server backed by SQLite. Routes: `/` (book index with per-book progress), `/book/<slug>` (chapter grid + book summary), `/book/<slug>/<n>` (chapter summary + KJV verses), `/search?q=` (ranked hits, no LLM call), `/ask?q=` (answer + linked sources). Slugs are lowercase with hyphens (`1-samuel`); `--data-dir` selects the database
+- `status`: shows progress (total vs summarized chapters, plus chunk and embedded counts once `embed` has run)
 - `export`: writes per-chapter markdown with cross-links plus book and master indexes
 - `config-edit`: hands `config.yaml` to `webbrowser.open()` (the OS default handler, not `$EDITOR`)
 
@@ -73,7 +77,7 @@ uv run pytest -k "book_summary" --no-cov       # By name pattern
 uv run mutmut run                              # Mutation testing (src/bible_study)
 ```
 
-`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 351 tests pass; 5 are skipped by design (3 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
+`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 569 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
 
 ## Ollama Context Window
 
@@ -89,6 +93,95 @@ Two mechanisms now guard this:
 So over-long prompts now fail loudly instead of being silently truncated. If `summarize-book` raises `PromptTooLongError`, that is the guard working: raise `ollama_num_ctx`, or shorten the input. Note that a bigger window only prevents *truncation* — feeding ~70k tokens to a small model still yields a shallow summary, so chunked map-reduce in `summarize_book()` remains the real fix for long books.
 
 `claude.sh` is a personal launcher, not part of the package. It exports `OLLAMA_CONTEXT_LENGTH` in front of `ollama launch` — a client command — so it has never affected the server this tool talks to.
+
+## Vector Search and `ask`
+
+`embed` builds a semantic index over three tiers, all keyed on `book_name`
+(never `book_abbrev` — `verses.book_abbrev` is `book_name[:3].upper()`, which
+disagrees with `indexer.BIBLE_BOOKS`: Ezekiel is `EZE` there but `EZK` here).
+
+| tier | count | source |
+|------|-------|--------|
+| `verse` | 9,969 | 5-verse windows advancing 3 verses, so chunks overlap |
+| `chapter` | 1,189 | each stored chapter summary, whole |
+| `book` | 66 | each stored book summary |
+
+11,224 vectors at 1024 dims. Building takes about 5 minutes on GPU (~36
+chunks/sec) and grows `data/bible.db` from 16 MB to roughly 81 MB — which is
+why the database is no longer tracked in git.
+
+Chunk *metadata* lives in the plain `chunks` table in `INIT_SQL`, so it stays
+readable when sqlite-vec is unavailable. Only vectors live in the three vec0
+tables, joined back on `chunks.id`.
+
+### Things that will silently corrupt the index
+
+- **Never use `INSERT OR REPLACE` on `chunks`.** Every other write in `db.py`
+  does, so this is the easy mistake. `REPLACE` deletes the row and reinserts
+  with a *new rowid*, orphaning the vec0 vector. Use `ON CONFLICT DO UPDATE`.
+  `test_upsert_keeps_the_id_stable_on_update` is the guard.
+- **Sentinel `0`, not `NULL`, for non-applicable columns.** SQLite treats
+  NULLs as distinct in a UNIQUE index, so nullable `chapter`/`verse_start`
+  would let every re-index insert duplicate summary rows.
+- **Rank on order, never on an absolute distance threshold.** Vectors are
+  normalised on write and query, so L2 and cosine rank identically — but they
+  are different functions of the same similarity, so a hard cutoff means
+  different things depending on which DDL the installed build accepted.
+- **Do not filter after KNN.** Asking for the top 10 and then keeping only
+  Genesis can return nothing even when Genesis matches well. Query the tier
+  tables separately instead, which is why there are three.
+- **Stamp `embedded_hash` only after vectors commit**, so a crash leaves rows
+  stale and the next run redoes them.
+
+### Retrieval design
+
+Three vec0 tables rather than one with a filterable metadata column, because
+retrieval needs top-k *per tier*: verse chunks outnumber chapter summaries
+8:1, so a single global top-k is routinely all verses and no summaries.
+
+Merging uses weighted reciprocal rank, not raw distance. Distances across
+tiers are numerically comparable — one vector space — but not semantically:
+chapter summaries are long, abstract, LLM-written prose that scores closer to
+an abstract question than terse 17th-century verse text does. Sorting the
+merged pool by distance returns nearly all summaries and nearly no scripture.
+
+Expansion is one level deep: a verse hit pulls its chapter summary, a chapter
+hit pulls its book summary, a book hit pulls nothing. Two levels would let a
+single verse hit drag in kilobytes of summary and crowd out everything else.
+Expansions inherit their parent's score and sort immediately after it on the
+`is_expansion` flag — no scalar penalty can place an expansion of rank *r*
+above the rank *r+1* parent for every *r*, since the required penalty tends
+to 1 as *r* grows.
+
+`answer_question` raises on empty retrieval rather than generating. A blank
+sources section produces a fluent answer from parametric memory that is
+indistinguishable from a grounded one.
+
+### Changing the embedding model
+
+Set `embed_model` and `embed_dims` in `config.yaml`. A vec0 column's width is
+fixed at creation and cannot be altered, so `init_vec` refuses a width change
+and tells you to run `embed --rebuild`. Changing only the model (same width)
+marks every chunk stale and re-embeds on the next `embed`.
+
+Note the split: the **model** comes from config (your intent), the **width**
+comes from the index's own `vec_meta` record (a physical property of the
+existing columns). `embed_all` reads the stored width, so a stray config edit
+cannot write mismatched vectors.
+
+Qwen3-Embedding is **asymmetric** — queries get an `Instruct: ...\nQuery: ...`
+prefix, documents are embedded raw. Both sides are handled inside
+`ollama.embed()` via `is_query`. Wrapping documents too, or leaving queries
+bare, degrades retrieval invisibly; `test_documents_are_left_raw` guards it.
+
+### Answer quality
+
+Retrieval is strong: "a woman who gleaned in the fields of her kinsman"
+returns Ruth 2 without the word Ruth appearing in the query. Grounding is only
+as good as the answering model. `gemma3:4b` will still extrapolate from
+loosely related passages when asked something Scripture does not address — it
+leads with the disclaimer but then answers anyway. If groundedness matters
+more than latency, point `ollama_model` at a larger model.
 
 ## Common Tasks
 
@@ -117,14 +210,16 @@ Set `ollama_num_ctx` in `config.yaml`. `prompts.get_num_ctx()` resolves it (igno
 | File | Role |
 |------|------|
 | `__init__.py` | Entry point; delegates to Click CLI |
-| `cli.py` | Click commands: init, summarize, summarize-book, view, status, export, clear-summaries, clear-book-summaries, config-edit |
+| `cli.py` | Click commands: init, summarize, summarize-book, embed, ask, view, status, export, clear-summaries, clear-book-summaries, config-edit |
 | `api.py` | bible-api.com client: JSON cache under `data/api-cache/`, chapter enumeration, and retry/backoff for `RETRYABLE_STATUS` (429/5xx) honouring `Retry-After`. Cached files may hold either a bare verse list (older) or a mapping (newer) — `fetch_chapter` normalises both, so keep that branch when touching the cache format |
-| `db.py` | SQLite schema & all CRUD helpers (verses, chapter_summaries, book_summaries) |
+| `db.py` | SQLite schema & all CRUD helpers (verses, chapter_summaries, book_summaries, chunks, vec_meta) |
 | `indexer.py` | Hardcoded 66-book structure, book names, chapter counts |
-| `ollama.py` | Local Ollama API client: health_check, check_model_available, generate, plus the context-window guard (check_prompt_fits, PromptTooLongError) |
-| `prompts.py` | YAML config loader + prompt builders (chapter_summary, book_summary) |
+| `ollama.py` | Local Ollama API client: health_check, check_model_available, generate, embed, plus the context-window guard (check_prompt_fits, PromptTooLongError) |
+| `prompts.py` | YAML config loader + prompt builders (chapter_summary, book_summary, ask) |
 | `summary.py` | Pipeline orchestration: summarize_chapter, summarize_book, export_markdowns |
 | `browser.py` | SQLite-backed HTTP server with _SQLiteHandler class and serve() entry point |
+| `vectors.py` | sqlite-vec layer: extension loading, vec0 tables, chunking, embed_all, KNN search |
+| `rag.py` | Grounded question answering: retrieve, expand, rank, budget, one generate() call |
 
 ## Browser Handler Rules
 
