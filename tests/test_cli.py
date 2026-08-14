@@ -79,10 +79,17 @@ class TestInitCommand:
 
 
 class TestSummarizeCommand:
-    """bible-study summarize."""
+    """bible-study summarize.
+
+    `summarize` preflights with ollama.health_check, so these must mock it.
+    Without the mock they pass only where Ollama happens to be running --
+    which is how they passed locally for months and failed on first CI run.
+    """
 
     def test_summarize_reports_done(self, runner, mocker):
         from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
         mock_gen = mocker.patch(
             "bible_study.cli.generate_all_chapters", return_value=[],
         )
@@ -94,6 +101,8 @@ class TestSummarizeCommand:
 
     def test_summarize_uses_custom_data_dir(self, runner, mocker):
         from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
         mock_gen = mocker.patch(
             "bible_study.cli.generate_all_chapters", return_value=[],
         )
@@ -101,6 +110,14 @@ class TestSummarizeCommand:
             result = runner.invoke(cli, ["summarize", "-d", "mydata"])
             assert result.exit_code == 0
             assert "mydata" in str(mock_gen.call_args[0][0])
+
+    def test_errors_when_ollama_is_down(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=False)
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["summarize"])
+            assert result.exit_code != 0
+            assert "Cannot reach Ollama" in result.output
 
 
 class TestSummarizeBookCommand:
