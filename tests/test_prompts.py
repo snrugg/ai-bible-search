@@ -148,3 +148,50 @@ class TestNumCtxConfig:
             lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
         )
         assert prompts.get_num_ctx() == NUM_CTX
+
+
+class TestReplacementEscaping:
+    """Substituted values are inserted literally, never as regex replacements.
+
+    render() used re.sub, whose *replacement* argument is scanned for
+    backslash escapes.  Any question or summary containing a backslash
+    either crashed or silently corrupted the prompt.
+    """
+
+    def test_backslash_digit_does_not_raise(self):
+        from bible_study.prompts import render
+        out = render("t", {"t": "Q: {q}"}, q=r"What does \1 mean?")
+        assert out == r"Q: What does \1 mean?"
+
+    def test_group_reference_is_not_interpreted(self):
+        from bible_study.prompts import render
+        out = render("t", {"t": "Q: {q}"}, q=r"Explain \g<0> please")
+        assert out == r"Q: Explain \g<0> please"
+        assert "{q}" not in out
+
+    def test_trailing_backslash_does_not_raise(self):
+        from bible_study.prompts import render
+        out = render("t", {"t": "Q: {q}"}, q="ends with a backslash\\")
+        assert out == "Q: ends with a backslash\\"
+
+    def test_backslash_t_stays_literal(self):
+        from bible_study.prompts import render
+        out = render("t", {"t": "Q: {q}"}, q=r"Path C:\temp\notes")
+        assert out == r"Q: Path C:\temp\notes"
+        assert "\t" not in out
+
+    def test_chapter_text_with_backslashes_survives(self):
+        from bible_study.prompts import build_chapter_prompt
+        config = {"chapter_summary": "Text:\n{chapter_text}"}
+        out = build_chapter_prompt(config, "Genesis", r"a \1 b \g<0> c", 1)
+        assert r"a \1 b \g<0> c" in out
+
+    def test_inline_template_also_escapes(self):
+        from bible_study.prompts import build_inline_chapter_prompt
+        out = build_inline_chapter_prompt("Genesis", r"verse \1 text", 1)
+        assert r"verse \1 text" in out
+
+    def test_repeated_placeholder_is_fully_replaced(self):
+        from bible_study.prompts import render
+        out = render("t", {"t": "{q} and {q}"}, q="x")
+        assert out == "x and x"

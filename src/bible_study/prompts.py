@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -101,9 +100,9 @@ def get_num_ctx(config: dict[str, str] | None = None) -> int:
 def render(template_name: str, config: dict[str, str], **kwargs: Any) -> str:
     """Fill a template from *config* with the given keyword arguments.
 
-    Placeholders follow the ``{key}`` pattern and are replaced using a
-    simple regular-expression substitution so that every missing key
-    silently becomes ``""`` (empty string).  Unknown keys are ignored.
+    Placeholders follow the ``{key}`` pattern and are replaced by a plain
+    string substitution so that every missing key silently becomes ``""``
+    (empty string).  Unknown keys are ignored.
     """
     try:
         template = config[template_name]
@@ -114,7 +113,12 @@ def render(template_name: str, config: dict[str, str], **kwargs: Any) -> str:
     for key, value in kwargs.items():
         placeholder = "{" + str(key) + "}"
         if placeholder in result:
-            result = re.sub(re.escape(placeholder), str(value or ""), result)
+            # str.replace, never re.sub: a regex *replacement* string is
+            # scanned for backslash escapes, so a value containing "\1"
+            # raises re.PatternError and one containing "\g<0>" silently
+            # re-injects the placeholder.  Both are reachable from a
+            # user-typed question or from LLM-written summary text.
+            result = result.replace(placeholder, str(value or ""))
     return result
 
 
@@ -123,7 +127,8 @@ def _render_template(text: str, **kwargs: Any) -> str:
     for key, value in kwargs.items():
         placeholder = "{" + str(key) + "}"
         if placeholder in text:
-            text = re.sub(re.escape(placeholder), str(value or ""), text)
+            # See render(): plain replacement, never a regex one.
+            text = text.replace(placeholder, str(value or ""))
     return text
 
 
