@@ -134,4 +134,7 @@ ask: |
   Sources:
   {context}
 
-  Provide your answer below.
+  Provide your answer below.  Prefer long (~10 paragraph) answers to complex topics with 
+  extensive sources.  Prefer short (1-2 paragraphs) to simpler topics or those with
+  limited source material.
+  

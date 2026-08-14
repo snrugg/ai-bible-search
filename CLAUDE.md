@@ -12,6 +12,7 @@ An indexed, summarized version of the entire KJV Bible (66 books, ~1,189 chapter
 - `tests/` — Unit tests (all mocked); `tests/integration/` — live I/O (skipped)
 - `config.yaml` — User-editable prompt templates, model names, and chunking settings
 - `.githooks/` — Tracked git hooks; enable with `git config core.hooksPath .githooks`
+- `.claude/skills/bible-ask/` — Claude Code skill: same retrieval as `ask`, answered by Claude instead of the local model
 - `data/` — SQLite database created at runtime; git-ignored, since the vector index pushes it past 80 MB
 
 ## Coding Standards
@@ -63,6 +64,7 @@ cli.py ──▶ summary.py ──▶ ollama.py (local LLM: generate + embed)
 - `summarize-book`: aggregates book-level summaries from chapter summaries. The stored chapter summaries are concatenated as `Chapter N: <summary>` and passed into the `{chapter_summaries}` placeholder of the `book_summary` template, so the model summarises your generated text rather than writing from memory
 - `embed`: chunks verses and summaries into `chunks`, then embeds every stale chunk into the sqlite-vec index. Incremental — re-running embeds only what changed. `--rebuild` discards existing vectors, `--limit` is a smoke test
 - `ask "question"`: retrieves across all three tiers, expands, budgets, and makes one `generate()` call. `-k` sets verse hits (summary tiers scale down from it); `--no-show-sources` hides the citation list
+- `search "query"`: retrieval only, no LLM call. `--json` for machine-readable output, `--expand` to apply the same expand/rank step `ask` uses — so `search --expand --json` prints exactly the context `ask` would send to the model. This is the retrieval-debugging surface, and what the `bible-ask` skill consumes
 - `view`: starts HTTP server backed by SQLite. Routes: `/` (book index with per-book progress), `/book/<slug>` (chapter grid + book summary), `/book/<slug>/<n>` (chapter summary + KJV verses), `/search?q=` (ranked hits, no LLM call), `/ask?q=` (answer + linked sources). Slugs are lowercase with hyphens (`1-samuel`); `--data-dir` selects the database
 - `status`: shows progress (total vs summarized chapters, plus chunk and embedded counts once `embed` has run)
 - `export`: writes per-chapter markdown with cross-links plus book and master indexes
@@ -84,7 +86,7 @@ uv run pytest -k "book_summary" --no-cov       # By name pattern
 uv run mutmut run                              # Mutation testing (src/bible_study)
 ```
 
-`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 569 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
+`addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 585 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
 
 ## Git Hooks
 
@@ -218,6 +220,22 @@ loosely related passages when asked something Scripture does not address — it
 leads with the disclaimer but then answers anyway. If groundedness matters
 more than latency, point `ollama_model` at a larger model.
 
+## The `bible-ask` Claude Code Skill
+
+`.claude/skills/bible-ask/SKILL.md` answers corpus questions with **Claude** rather than the local Ollama model, while reusing this project's retrieval unchanged. It is not an API integration: there is no `anthropic` dependency, no API key, and no per-query cost — the answering model is the Claude Code session itself.
+
+The split is the point. Retrieval is the part that needs this repo (the vector index, the chunking, the expansion rules); answering is the part a stronger model does better. The skill runs:
+
+```bash
+uv run bible-study search "<question>" --expand --json -k 8
+```
+
+`--expand` returns the assembled, ranked context `ask` itself would send — each hit plus its parent summary, deduped — so the skill and `ask` are grounded in identical material and only the answering model differs. That is also why `search` gained `--json`: the skill needs a stable machine-readable interface, and coupling it to `vectors.search` internals would break on refactor.
+
+**Ollama must still be running.** The query is embedded locally with `qwen3-embedding:0.6b` even though Claude writes the answer.
+
+The skill's grounding rules mirror the `ask` template in `config.yaml` — cite every claim, prefer KJV text over generated summaries, and decline rather than reason by analogy when the retrieved sources do not address the question. If you change one, change the other.
+
 ## Common Tasks
 
 ### Adding a new CLI command
@@ -245,7 +263,7 @@ Set `ollama_num_ctx` in `config.yaml`. `prompts.get_num_ctx()` resolves it (igno
 | File | Role |
 |------|------|
 | `__init__.py` | Entry point; delegates to Click CLI |
-| `cli.py` | Click commands: init, summarize, summarize-book, embed, ask, view, status, export, clear-summaries, clear-book-summaries, config-edit |
+| `cli.py` | Click commands: init, summarize, summarize-book, embed, ask, search, view, status, export, clear-summaries, clear-book-summaries, config-edit |
 | `api.py` | bible-api.com client: JSON cache under `data/api-cache/`, chapter enumeration, and retry/backoff for `RETRYABLE_STATUS` (429/5xx) honouring `Retry-After`. Cached files may hold either a bare verse list (older) or a mapping (newer) — `fetch_chapter` normalises both, so keep that branch when touching the cache format |
 | `db.py` | SQLite schema & all CRUD helpers (verses, chapter_summaries, book_summaries, chunks, vec_meta) |
 | `indexer.py` | Hardcoded 66-book structure, book names, chapter counts |

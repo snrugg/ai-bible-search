@@ -459,3 +459,108 @@ def ask(
                 f"  ({result['dropped']} more omitted to fit the "
                 f"context window)",
             )
+
+
+@cli.command()
+@click.argument("query", nargs=-1, required=True)
+@_data_dir_option
+@click.option(
+    "-k",
+    "--top-k",
+    type=int,
+    default=8,
+    help="Verse passages to retrieve; the summary tiers scale down from this.",
+)
+@click.option(
+    "--expand/--no-expand",
+    default=False,
+    help="Pull in each hit's parent summary, exactly as `ask` does.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit JSON instead of a human-readable ranking.",
+)
+def search(
+    query: tuple[str, ...],
+    data_dir: Path | None,
+    top_k: int,
+    expand: bool,
+    as_json: bool,
+) -> None:
+    """Rank indexed passages and summaries against a query.
+
+    Retrieval only -- no LLM call, so this is both a fast lookup and the
+    way to see exactly what `ask` is working from.  With --expand the
+    output is the assembled context `ask` would send to the model.
+    """
+    import json as _json
+
+    from bible_study import vectors as _vec
+    from bible_study.ollama import PromptTooLongError, health_check
+
+    text = " ".join(query).strip()
+    if not text:
+        raise click.ClickException("Give me something to search for.")
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        raise click.ClickException(
+            f"No database at {db_path} -- run `init` first.",
+        )
+
+    if not health_check():
+        raise click.ClickException(
+            "Cannot reach Ollama at http://localhost:11434 -- start it first. "
+            "The query still has to be embedded locally.",
+        )
+
+    try:
+        hits = _vec.search(db_path, _vec.embed_query(text), {
+            "verse": top_k,
+            "chapter": max(1, top_k // 2),
+            "book": max(1, top_k // 4),
+        })
+        if expand:
+            from bible_study.rag import expand as _expand, rank as _rank
+            rows = [
+                {
+                    "kind": block["kind"],
+                    "citation": block["citation"],
+                    "book_name": block["book_name"],
+                    "chapter": block["chapter"],
+                    "score": round(block["score"], 4),
+                    "is_expansion": block["is_expansion"],
+                    "text": block["text"],
+                }
+                for block in _rank(_expand(db_path, hits))
+            ]
+        else:
+            rows = [
+                {
+                    "kind": hit["tier"],
+                    "citation": hit["citation"],
+                    "book_name": hit["book_name"],
+                    "chapter": hit["chapter"],
+                    "distance": round(hit["distance"], 4),
+                    "text": hit["text"],
+                }
+                for hit in hits
+            ]
+    except (_vec.VectorSupportError, _vec.VectorIndexError,
+            PromptTooLongError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(_json.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        click.echo("No matches.")
+        return
+    for row in rows:
+        rank_value = row.get("distance", row.get("score"))
+        click.echo(f"{rank_value:<8} {row['kind']:<16} {row['citation']}")

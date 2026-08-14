@@ -23,7 +23,7 @@ class TestCliGroup:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         for name in ("init", "summarize", "summarize-book", "view", "status",
-                     "embed", "ask"):
+                     "embed", "ask", "search"):
             assert name in result.output
 
     def test_no_args_exits_cleanly(self, runner):
@@ -36,7 +36,7 @@ class TestCliGroup:
         assert set(cli.commands) == {
             "init", "summarize", "summarize-book", "view", "status",
             "export", "clear-summaries", "clear-book-summaries", "config-edit",
-            "embed", "ask",
+            "embed", "ask", "search",
         }
 
 
@@ -725,3 +725,210 @@ class TestAskCommand:
             result = runner.invoke(cli, ["ask", "   "])
             assert result.exit_code != 0
             assert "Ask a question" in result.output
+
+
+class TestSearchCommand:
+    """bible-study search."""
+
+    def _seed(self):
+        from pathlib import Path
+        from bible_study.db import init_db, save_book_summary, save_summary, upsert_verses
+        db_path = Path("data/bible.db")
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+        save_summary(db_path, "Genesis", 1, "Creation summary.")
+        save_book_summary(db_path, "Genesis", "GEN", "Book of beginnings.")
+        return db_path
+
+    def _hit(self, tier="verse", citation="Genesis 1:1-5"):
+        return {
+            "tier": tier, "book_name": "Genesis", "chapter": 1,
+            "verse_start": 1, "verse_end": 5, "id": 1, "chunk_id": 1,
+            "distance": 0.1234, "rank": 0,
+            "citation": citation, "text": "In the beginning God created.",
+        }
+
+    @pytest.fixture
+    def wired(self, mocker):
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        return mocker.patch(
+            "bible_study.vectors.search", return_value=[self._hit()],
+        )
+
+    def test_prints_ranked_hits(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "beginning"])
+            assert result.exit_code == 0, result.output
+            assert "Genesis 1:1-5" in result.output
+            assert "0.1234" in result.output
+
+    def test_json_output_parses(self, runner, wired):
+        import json
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "beginning", "--json"])
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            assert rows[0]["citation"] == "Genesis 1:1-5"
+            assert rows[0]["kind"] == "verse"
+            assert "text" in rows[0]
+
+    def test_expand_returns_ranked_blocks(self, runner, wired):
+        import json
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(
+                cli, ["search", "beginning", "--expand", "--json"],
+            )
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            kinds = {row["kind"] for row in rows}
+            assert "verses" in kinds
+            assert "chapter-summary" in kinds
+            assert all("score" in row for row in rows)
+            assert any(row["is_expansion"] for row in rows)
+
+    def test_top_k_reaches_search(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            runner.invoke(cli, ["search", "x", "-k", "12"])
+            assert wired.call_args[0][2] == {
+                "verse": 12, "chapter": 6, "book": 3,
+            }
+
+    def test_accepts_an_unquoted_query(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "covenant", "with", "Abraham"])
+            assert result.exit_code == 0
+
+    def test_reports_no_matches(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[])
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "nothing"])
+            assert "No matches." in result.output
+
+    def test_empty_json_is_still_valid(self, runner, mocker):
+        import json
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[])
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "nothing", "--json"])
+            assert json.loads(result.output) == []
+
+    def test_errors_when_database_missing(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["search", "x"])
+            assert result.exit_code != 0
+            assert "run `init` first" in result.output
+
+    def test_errors_when_ollama_is_down(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=False)
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "x"])
+            assert result.exit_code != 0
+            assert "Cannot reach Ollama" in result.output
+
+    def test_missing_index_becomes_a_clean_error(self, runner, mocker):
+        from bible_study.cli import cli
+        from bible_study.vectors import VectorIndexError
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch(
+            "bible_study.vectors.embed_query",
+            side_effect=VectorIndexError("No vector index found"),
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "x"])
+            assert result.exit_code != 0
+            assert "No vector index found" in result.output
+            assert "Traceback" not in result.output
+
+    def test_blank_query_is_rejected(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["search", "   "])
+            assert result.exit_code != 0
+            assert "something to search for" in result.output
+
+    def test_honours_data_dir(self, runner, mocker, tmp_path):
+        from bible_study.cli import cli
+        from bible_study.db import init_db, upsert_verses
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mock_search = mocker.patch(
+            "bible_study.vectors.search", return_value=[self._hit()],
+        )
+        db_path = tmp_path / "alt" / "bible.db"
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+        result = runner.invoke(cli, ["search", "x", "-d", str(tmp_path / "alt")])
+        assert result.exit_code == 0, result.output
+        assert mock_search.call_args[0][0] == db_path
+
+
+class TestStatusChunkCounts:
+    """status reports chunk/embedded counts once `embed` has run."""
+
+    def test_reports_chunk_counts(self, runner):
+        from pathlib import Path
+        from bible_study.cli import cli
+        from bible_study.db import init_db, upsert_chunk, upsert_verses
+        with runner.isolated_filesystem():
+            db_path = Path("data/bible.db")
+            init_db(db_path)
+            upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+            upsert_chunk(
+                db_path, "verse", "Genesis", 1, 1, 5, "Genesis 1:1-5", "t", "h",
+            )
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "Chunks:         1" in result.output
+            assert "Embedded:       0" in result.output
+
+    def test_omits_chunk_counts_before_embedding(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
+            assert "Chunks:" not in result.output
+
+
+class TestAskModelWarnings:
+    """ask soft-warns for each model Ollama does not list."""
+
+    def test_warns_for_both_models(self, runner, mocker):
+        from pathlib import Path
+        from bible_study.cli import cli
+        from bible_study.db import init_db, upsert_verses
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=False)
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            return_value={"question": "q", "answer": "A", "sources": [],
+                          "dropped": 0, "prompt": "P"},
+        )
+        with runner.isolated_filesystem():
+            db_path = Path("data/bible.db")
+            init_db(db_path)
+            upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert result.output.count("was not listed by Ollama") == 2

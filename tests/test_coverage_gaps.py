@@ -316,3 +316,13 @@ class TestFinalBranches:
             "http.server.SimpleHTTPRequestHandler.__init__", return_value=None,
         )
         assert _SQLiteHandler().db_path == _P("data/bible.db")
+
+
+class TestOllamaEmbedFallthrough:
+    """Cover the unreachable-in-practice tail of embed()."""
+
+    def test_embed_returns_empty_when_loop_does_not_run(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post")
+        assert embed(["a"], max_retries=0) == []
+        mock_post.assert_not_called()

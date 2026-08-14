@@ -20,7 +20,7 @@ questions from the indexed corpus with citations. Nothing leaves your machine.
 - **YAML-configurable** — prompts, models, and chunking in `config.yaml`, no code changes
 - **Browser viewer** — HTTP server with clickable navigation, search, and ask
 - **Markdown export** — every summary as linked markdown files
-- **Tested** — 569 tests, 99% coverage, enforced by a pre-commit hook
+- **Tested** — 585 tests, 99% coverage, enforced by a pre-commit hook
 
 ## Quick Start
 
@@ -150,9 +150,37 @@ it (`-k 8` gives 8 verse, 4 chapter, 2 book hits).
 
 ### Debugging retrieval
 
-The browser's `/search` route runs retrieval **without** an LLM call, so it
-shows exactly what `ask` is working from. If an answer looks wrong, look there
-first — the problem is usually retrieval, not generation.
+`bible-study search` and the browser's `/search` route both run retrieval
+**without** an LLM call, so they show exactly what `ask` is working from. If an
+answer looks wrong, look there first — the problem is usually retrieval, not
+generation.
+
+```bash
+bible-study search "covenant with Abraham" -k 5
+#   0.2744   verse    Genesis 17:7-11
+#   0.2748   chapter  Genesis 17
+#   0.3194   chapter  Genesis 15
+```
+
+Add `--expand` to apply the same expand-and-rank step `ask` uses, and `--json`
+for machine-readable output. `search --expand --json` prints precisely the
+context `ask` would send to the model.
+
+### Asking with Claude instead of the local model
+
+`.claude/skills/bible-ask/` is a [Claude Code](https://claude.com/claude-code)
+skill that reuses this retrieval unchanged but has **Claude** write the answer.
+There is no API key, no extra dependency, and no per-query cost — the answering
+model is the Claude Code session itself. Retrieval still runs locally, so Ollama
+must be running to embed the query.
+
+```
+/bible-ask why did Abraham leave Ur?
+```
+
+Use it when you want better prose and judgment than `gemma3:4b` gives; use
+`bible-study ask` when you want something scriptable that runs without Claude
+Code.
 
 ### A caveat on groundedness
 
@@ -186,6 +214,7 @@ Slugs are lowercase with hyphens: `1-samuel`, `song-of-solomon`.
 | `bible-study summarize-book` | Generate book-level aggregate summaries |
 | `bible-study embed [--rebuild] [--limit N] [--batch-size N]` | Build the vector index |
 | `bible-study ask "QUESTION" [-k N] [--no-show-sources]` | Answer a question from the index |
+| `bible-study search "QUERY" [-k N] [--expand] [--json]` | Rank matches without an LLM call |
 | `bible-study view [--port PORT]` | Launch the browser viewer |
 | `bible-study status` | Show indexing, summarization, and embedding progress |
 | `bible-study export [-o DIR]` | Export summaries as linked markdown (default `output/`) |
@@ -319,6 +348,7 @@ bible-study/
 ├── CLAUDE.md                           # Guidance for Claude Code
 ├── README.md                           # You are here
 ├── .githooks/pre-commit                # Guards + compile check + test suite
+├── .claude/skills/bible-ask/           # Claude Code skill (retrieval + Claude answers)
 │
 ├── src/bible_study/
 │     ├── __init__.py                   # Entry point; delegates to Click CLI
@@ -333,7 +363,7 @@ bible-study/
 │     ├── rag.py                        # Retrieve, expand, rank, budget, answer
 │     └── browser.py                    # SQLite-backed HTTP server
 │
-├── tests/                              # 569 tests, all mocked by default
+├── tests/                              # 585 tests, all mocked by default
 │     ├── conftest.py                   # Shared fixtures
 │     ├── test_api.py  test_api_extra.py  test_rate_limit.py
 │     ├── test_db.py   test_indexer.py    test_ollama.py
@@ -389,7 +419,7 @@ uv run mutmut run                              # Mutation testing
 
 `addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare
 `uv run pytest` produces a coverage report and **fails under 90%**. Current
-state: **569 passing, 9 skipped by design** (7 live-I/O integration tests, 2
+state: **585 passing, 9 skipped by design** (7 live-I/O integration tests, 2
 over-the-wire browser tests), **99% coverage**.
 
 Integration tests are skipped with class-level `@pytest.mark.skip`. Run them by
