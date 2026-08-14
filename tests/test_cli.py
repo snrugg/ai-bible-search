@@ -22,7 +22,8 @@ class TestCliGroup:
         from bible_study.cli import cli
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for name in ("init", "summarize", "summarize-book", "view", "status"):
+        for name in ("init", "summarize", "summarize-book", "view", "status",
+                     "embed", "ask"):
             assert name in result.output
 
     def test_no_args_exits_cleanly(self, runner):
@@ -35,6 +36,7 @@ class TestCliGroup:
         assert set(cli.commands) == {
             "init", "summarize", "summarize-book", "view", "status",
             "export", "clear-summaries", "clear-book-summaries", "config-edit",
+            "embed", "ask",
         }
 
 
@@ -191,7 +193,7 @@ class TestStatusCommand:
             assert result.exit_code == 0
             assert "Total chapters: 2" in result.output
             assert "Summarized:     1" in result.output
-            assert "Remaining:     1" in result.output
+            assert "Remaining:      1" in result.output
 
 
 class TestClearSummariesCommand:
@@ -437,3 +439,289 @@ class TestConfigEditCommand:
             assert result.exit_code == 0
             assert "Config file not found" in result.output
             mock_open.assert_not_called()
+
+
+class TestEmbedCommand:
+    """bible-study embed."""
+
+    def _seed(self):
+        from pathlib import Path
+        from bible_study.db import init_db, save_summary, upsert_verses
+        db_path = Path("data/bible.db")
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+        save_summary(db_path, "Genesis", 1, "A summary.")
+        return db_path
+
+    def test_embeds_and_reports(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed"])
+            assert result.exit_code == 0, result.output
+            assert "Chunked 2" in result.output
+            assert "Embedded 2 chunks." in result.output
+            assert "Done!" in result.output
+
+    def test_echoes_the_embedding_model(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed"])
+            assert "Using embedding model:" in result.output
+
+    def test_warns_when_model_missing(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=False)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed"])
+            assert "ollama pull" in result.output
+
+    def test_rebuild_clears_vectors(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            runner.invoke(cli, ["embed"])
+            result = runner.invoke(cli, ["embed", "--rebuild"])
+            assert result.exit_code == 0, result.output
+            assert "Cleared 2 vectors." in result.output
+
+    def test_limit_is_honoured(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed", "--limit", "1"])
+            assert "Embedded 1 chunks." in result.output
+
+    def test_errors_when_ollama_is_down(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=False)
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed"])
+            assert result.exit_code != 0
+            assert "Cannot reach Ollama" in result.output
+
+    def test_errors_when_database_missing(self, runner):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["embed"])
+            assert result.exit_code != 0
+            assert "run `init` first" in result.output
+
+    def test_reports_total_failure(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed", side_effect=RuntimeError("down"),
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["embed"])
+            assert result.exit_code != 0
+            assert "failed to embed" in result.output
+
+    def test_honours_data_dir(self, runner, mocker, tmp_path):
+        from bible_study.cli import cli
+        from bible_study.db import chunk_counts, init_db, upsert_verses
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        db_path = tmp_path / "alt" / "bible.db"
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+        result = runner.invoke(cli, ["embed", "-d", str(tmp_path / "alt")])
+        assert result.exit_code == 0, result.output
+        assert chunk_counts(db_path)["verse"] == (1, 1)
+
+    def test_surfaces_a_dims_change_as_a_clean_error(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.ollama.embed",
+            side_effect=lambda texts, **kw: [[0.1] * 1024 for _ in texts],
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            runner.invoke(cli, ["embed"])
+            mocker.patch("bible_study.prompts.get_embed_dims", return_value=512)
+            result = runner.invoke(cli, ["embed"])
+            assert result.exit_code != 0
+            assert "--rebuild" in result.output
+
+
+class TestAskCommand:
+    """bible-study ask."""
+
+    @pytest.fixture
+    def wired(self, mocker):
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        return mocker.patch(
+            "bible_study.rag.answer_question",
+            return_value={
+                "question": "q",
+                "answer": "Abraham left Ur because God called him.",
+                "sources": [
+                    {"citation": "Genesis 11:27-32", "kind": "verses",
+                     "book_name": "Genesis", "chapter": 11},
+                    {"citation": "Genesis 12 (summary)",
+                     "kind": "chapter-summary",
+                     "book_name": "Genesis", "chapter": 12},
+                ],
+                "dropped": 0,
+                "prompt": "P",
+            },
+        )
+
+    def _seed(self):
+        from pathlib import Path
+        from bible_study.db import init_db, upsert_verses
+        db_path = Path("data/bible.db")
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning")])
+        return db_path
+
+    def test_prints_the_answer(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why did Abraham leave Ur?"])
+            assert result.exit_code == 0, result.output
+            assert "Abraham left Ur because God called him." in result.output
+
+    def test_lists_sources(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert "Sources:" in result.output
+            assert "- Genesis 11:27-32" in result.output
+
+    def test_no_show_sources_hides_them(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?", "--no-show-sources"])
+            assert "Sources:" not in result.output
+
+    def test_accepts_an_unquoted_question(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why", "did", "Abraham", "go"])
+            assert result.exit_code == 0
+            assert wired.call_args[0][0] == "why did Abraham go"
+
+    def test_top_k_reaches_answer_question(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            runner.invoke(cli, ["ask", "why?", "-k", "12"])
+            assert wired.call_args.kwargs["k_verse"] == 12
+            assert wired.call_args.kwargs["k_chapter"] == 6
+            assert wired.call_args.kwargs["k_book"] == 3
+
+    def test_reports_dropped_sources(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            return_value={"question": "q", "answer": "A", "sources": [],
+                          "dropped": 3, "prompt": "P"},
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert "3 more omitted" in result.output
+
+    def test_errors_when_database_missing(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert result.exit_code != 0
+            assert "run `init` first" in result.output
+
+    def test_errors_when_ollama_is_down(self, runner, mocker):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.ollama.health_check", return_value=False)
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert result.exit_code != 0
+            assert "Cannot reach Ollama" in result.output
+
+    def test_missing_index_becomes_a_clean_error(self, runner, mocker):
+        from bible_study.cli import cli
+        from bible_study.vectors import VectorIndexError
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            side_effect=VectorIndexError("No vector index found"),
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert result.exit_code != 0
+            assert "No vector index found" in result.output
+            assert "Traceback" not in result.output
+
+    def test_prompt_too_long_becomes_a_clean_error(self, runner, mocker):
+        from bible_study.cli import cli
+        from bible_study.ollama import PromptTooLongError
+        mocker.patch("bible_study.ollama.health_check", return_value=True)
+        mocker.patch("bible_study.ollama.check_model_available", return_value=True)
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            side_effect=PromptTooLongError("Prompt is ~9 tokens"),
+        )
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "why?"])
+            assert result.exit_code != 0
+            assert "Prompt is ~9 tokens" in result.output
+
+    def test_blank_question_is_rejected(self, runner, wired):
+        from bible_study.cli import cli
+        with runner.isolated_filesystem():
+            self._seed()
+            result = runner.invoke(cli, ["ask", "   "])
+            assert result.exit_code != 0
+            assert "Ask a question" in result.output

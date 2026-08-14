@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import webbrowser
 from html import escape
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 _DEFAULT_PORT = 8080
 _DEFAULT_DB = Path("data/bible.db")
@@ -39,6 +39,17 @@ table.books tr:hover td { background: #fafaf7; }
 .verse { margin: 0.4rem 0; }
 .verse b { color: #888; font-size: 0.8rem; vertical-align: super; }
 .muted { color: #777; }
+form.search { margin: 1rem 0; display: flex; gap: 0.4rem; }
+form.search input { flex: 1; padding: 0.4rem 0.5rem; font-size: 1rem;
+                    border: 1px solid #ccd; }
+form.search button { padding: 0.4rem 0.9rem; font-size: 1rem; cursor: pointer;
+                     border: 1px solid #9ab; background: #f7f7f4; }
+.hit { margin: 0.9rem 0; }
+.hit .ref { font-weight: 600; }
+.hit .dist { color: #999; font-size: 0.8rem; }
+.hit .snippet { color: #444; margin: 0.15rem 0 0; }
+.tier { color: #888; font-size: 0.75rem; text-transform: uppercase;
+        letter-spacing: 0.04em; }
 """
 
 
@@ -49,7 +60,12 @@ def serve(port: int = _DEFAULT_PORT, db_path: Path | None = None) -> None:
     def handler(*args, **kwargs):
         return _SQLiteHandler(*args, db_path=db_path, **kwargs)
 
-    server = HTTPServer(("127.0.0.1", port), handler)
+    # Threading, not plain HTTPServer: an /ask request holds the socket for
+    # the whole generate() call -- tens of seconds -- during which a
+    # single-threaded server serves nothing at all, not even a favicon.
+    # Safe because handlers hold a Path and every read opens its own
+    # connection; no sqlite3 connection is ever shared across threads.
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     webbrowser.open(f"http://localhost:{port}")
     try:
         server.serve_forever()
@@ -68,6 +84,46 @@ def _book_from_slug(slug: str):
     return _get_book(unquote(slug).replace("-", " ").strip())
 
 
+def _query_param(query: str, name: str) -> str:
+    """Return the first value of *name* in a raw query string, or ''."""
+    return parse_qs(query).get(name, [""])[0].strip()
+
+
+def _search_form(action: str, query: str, label: str, hint: str = "") -> str:
+    """Render a search form that echoes *query* back safely."""
+    placeholder = escape(hint or "Search the KJV ...")
+    return (
+        f"<form class='search' action='{action}' method='get'>"
+        f"<input type='text' name='q' value='{escape(query)}' "
+        f"placeholder='{placeholder}' autofocus>"
+        f"<button type='submit'>{escape(label)}</button></form>"
+    )
+
+
+def _nav() -> str:
+    """Render the shared navigation strip."""
+    return (
+        "<nav><a href='/'>Books</a> &middot; "
+        "<a href='/search'>Search</a> &middot; "
+        "<a href='/ask'>Ask</a></nav>"
+    )
+
+
+def _hit_link(hit: dict) -> str:
+    """Link a search hit back to the page that holds it."""
+    slug = _slug(hit["book_name"])
+    if hit["tier"] == "book":
+        return f"/book/{slug}"
+    return f"/book/{slug}/{hit['chapter']}"
+
+
+_TIER_LABEL = {
+    "verse": "passage",
+    "chapter": "chapter summary",
+    "book": "book summary",
+}
+
+
 class _SQLiteHandler(SimpleHTTPRequestHandler):
     """Handle HTTP requests using SQLite data."""
 
@@ -79,9 +135,14 @@ class _SQLiteHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         """Route incoming GET requests."""
-        path = urlparse(self.path).path.strip("/")
+        parsed = urlparse(self.path)
+        path = parsed.path.strip("/")
         if not path:
             self._book_list()
+        elif path == "search":
+            self._search_page(_query_param(parsed.query, "q"))
+        elif path == "ask":
+            self._ask_page(_query_param(parsed.query, "q"))
         elif path.startswith("book/"):
             parts = [p for p in path[5:].split("/") if p]
             if len(parts) == 1:
@@ -112,7 +173,7 @@ class _SQLiteHandler(SimpleHTTPRequestHandler):
         stored = self._verse_counts()
         with_book_summary = self._book_summary_names()
 
-        parts = []
+        parts = [_search_form("/search", "", "Search")]
         totals = (sum(stored.values()), sum(summarized.values()),
                   len(with_book_summary))
         parts.append(
@@ -264,6 +325,104 @@ class _SQLiteHandler(SimpleHTTPRequestHandler):
         parts.append(f"<nav>{' &middot; '.join(links)}</nav>")
 
         self._send_html(self._page(f"{name} {chapter}", "".join(parts)))
+
+    def _search_page(self, query):
+        """Rank indexed passages and summaries against *query*.
+
+        No LLM call, so this doubles as the retrieval-debugging surface:
+        if `ask` returns something odd, look here first.
+        """
+        parts = [
+            "<h1>Search</h1>",
+            _nav(),
+            _search_form("/search", query, "Search"),
+        ]
+        if not query:
+            parts.append("<p class='muted'>Type a phrase or question. "
+                         "Results are ranked by meaning, not keyword.</p>")
+            self._send_html(self._page("Search", "".join(parts)))
+            return
+
+        try:
+            hits = self._search_hits(query)
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"<p class='muted'>Search unavailable: "
+                         f"{escape(str(exc))}</p>")
+            self._send_html(self._page("Search", "".join(parts)))
+            return
+
+        if not hits:
+            parts.append("<p class='muted'>Nothing matched. Run "
+                         "<code>bible-study embed</code> if the index has "
+                         "not been built.</p>")
+        for hit in hits:
+            snippet = hit["text"][:280]
+            if len(hit["text"]) > 280:
+                snippet += " ..."
+            parts.append(
+                f"<div class='hit'>"
+                f"<a class='ref' href='{_hit_link(hit)}'>"
+                f"{escape(hit['citation'])}</a> "
+                f"<span class='tier'>"
+                f"{escape(_TIER_LABEL.get(hit['tier'], hit['tier']))}</span> "
+                f"<span class='dist'>{hit['distance']:.3f}</span>"
+                f"<p class='snippet'>{escape(snippet)}</p>"
+                f"</div>",
+            )
+        self._send_html(self._page("Search", "".join(parts)))
+
+    def _search_hits(self, query):
+        """Embed *query* and return ranked hits across all tiers."""
+        from bible_study import vectors as _vec
+        return _vec.search(
+            self.db_path,
+            _vec.embed_query(query),
+            {"verse": 8, "chapter": 4, "book": 2},
+        )
+
+    def _ask_page(self, query):
+        """Answer *query* from the index, with linked sources."""
+        parts = [
+            "<h1>Ask</h1>",
+            _nav(),
+            _search_form(
+                "/ask", query, "Ask",
+                hint="Ask a question about the KJV ...",
+            ),
+        ]
+        if not query:
+            parts.append("<p class='muted'>Ask a question in plain English. "
+                         "This runs a local model, so an answer takes a few "
+                         "seconds.</p>")
+            self._send_html(self._page("Ask", "".join(parts)))
+            return
+
+        try:
+            from bible_study.rag import answer_question
+            result = answer_question(query, self.db_path)
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"<p class='muted'>Could not answer: "
+                         f"{escape(str(exc))}</p>")
+            self._send_html(self._page("Ask", "".join(parts)))
+            return
+
+        parts.append(f"<div class='summary'>{escape(result['answer'].strip())}"
+                     f"</div>")
+        parts.append("<h2>Sources</h2>")
+        for source in result["sources"]:
+            slug = _slug(source["book_name"])
+            href = (f"/book/{slug}/{source['chapter']}"
+                    if source["chapter"] else f"/book/{slug}")
+            parts.append(
+                f"<div class='hit'><a class='ref' href='{href}'>"
+                f"{escape(source['citation'])}</a></div>",
+            )
+        if result["dropped"]:
+            parts.append(
+                f"<p class='muted'>{result['dropped']} more omitted to fit "
+                f"the context window.</p>",
+            )
+        self._send_html(self._page("Ask", "".join(parts)))
 
     def _fallback_page(self, path):
         """Show a 404 for unknown routes."""

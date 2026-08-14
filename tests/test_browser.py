@@ -87,14 +87,14 @@ class TestServeMock:
     def test_serve_calls_httpserver(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 serve(port=8080)
                 assert ms.call_args[0][0] == ("127.0.0.1", 8080)
 
     def test_serve_opens_browser_with_custom_port(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open") as mo:
-            with patch("bible_study.browser.HTTPServer"):
+            with patch("bible_study.browser.ThreadingHTTPServer"):
                 serve(port=9000)
                 mo.assert_called_once()
                 assert "9000" in mo.call_args[0][0]
@@ -102,21 +102,21 @@ class TestServeMock:
     def test_serve_uses_default_port_when_no_arg(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 serve()
                 assert ms.call_args[0][0] == ("127.0.0.1", 8080)
 
     def test_serve_calls_serve_forever(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 serve(port=8081)
                 ms.return_value.serve_forever.assert_called_once()
 
     def test_serve_swallows_keyboard_interrupt(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 ms.return_value.serve_forever.side_effect = KeyboardInterrupt
                 serve(port=8083)
 
@@ -124,7 +124,7 @@ class TestServeMock:
         from bible_study.browser import serve
         db = tmp_path / "custom.db"
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 serve(port=8084, db_path=db)
                 factory = ms.call_args[0][1]
         with patch("bible_study.browser.SimpleHTTPRequestHandler.__init__",
@@ -135,7 +135,7 @@ class TestServeMock:
     def test_serve_defaults_to_data_bible_db(self):
         from bible_study.browser import serve
         with patch("bible_study.browser.webbrowser.open"):
-            with patch("bible_study.browser.HTTPServer") as ms:
+            with patch("bible_study.browser.ThreadingHTTPServer") as ms:
                 serve(port=8085)
                 factory = ms.call_args[0][1]
         with patch("bible_study.browser.SimpleHTTPRequestHandler.__init__",
@@ -401,6 +401,8 @@ class TestDoGetRouting:
         handler._chapter_list = MagicMock()
         handler._chapter_view = MagicMock()
         handler._fallback_page = MagicMock()
+        handler._search_page = MagicMock()
+        handler._ask_page = MagicMock()
         handler._send_error = MagicMock()
         return handler
 
@@ -516,3 +518,294 @@ class TestIntegration:
     @pytest.mark.skip(reason="integration test -- runs only on demand")
     def test_chapter_view_returns_verses(self):
         pass
+
+
+class TestQueryParam:
+    """do_GET used to discard the query string entirely."""
+
+    def test_returns_the_first_value(self):
+        from bible_study.browser import _query_param
+        assert _query_param("q=grace&q=other", "q") == "grace"
+
+    def test_missing_key_returns_empty(self):
+        from bible_study.browser import _query_param
+        assert _query_param("x=1", "q") == ""
+
+    def test_empty_query_returns_empty(self):
+        from bible_study.browser import _query_param
+        assert _query_param("", "q") == ""
+
+    def test_percent_and_plus_are_decoded(self):
+        from bible_study.browser import _query_param
+        assert _query_param("q=what+is+grace%3F", "q") == "what is grace?"
+
+    def test_value_is_stripped(self):
+        from bible_study.browser import _query_param
+        assert _query_param("q=++grace++", "q") == "grace"
+
+
+class TestSearchRouting:
+    """/search and /ask dispatch, including the query string."""
+
+    def _handler(self, path):
+        from bible_study.browser import _SQLiteHandler
+        handler = _SQLiteHandler.__new__(_SQLiteHandler)
+        handler.path = path
+        handler.wfile = MagicMock()
+        handler._book_list = MagicMock()
+        handler._chapter_list = MagicMock()
+        handler._chapter_view = MagicMock()
+        handler._fallback_page = MagicMock()
+        handler._search_page = MagicMock()
+        handler._ask_page = MagicMock()
+        handler._send_error = MagicMock()
+        return handler
+
+    def test_search_route_dispatches(self):
+        handler = self._handler("/search")
+        handler.do_GET()
+        handler._search_page.assert_called_once_with("")
+
+    def test_search_route_extracts_the_query(self):
+        handler = self._handler("/search?q=covenant")
+        handler.do_GET()
+        handler._search_page.assert_called_once_with("covenant")
+
+    def test_search_query_is_url_decoded(self):
+        handler = self._handler("/search?q=what+is+grace%3F")
+        handler.do_GET()
+        handler._search_page.assert_called_once_with("what is grace?")
+
+    def test_ask_route_dispatches(self):
+        handler = self._handler("/ask?q=why")
+        handler.do_GET()
+        handler._ask_page.assert_called_once_with("why")
+
+    def test_book_route_still_ignores_the_query_string(self):
+        handler = self._handler("/book/genesis/1?q=x")
+        handler.do_GET()
+        handler._chapter_view.assert_called_once_with("genesis", 1)
+
+
+class TestSearchPage:
+    """/search rendering."""
+
+    def _hit(self, tier="verse", book="Genesis", chapter=1, citation=None,
+             text="In the beginning God created."):
+        return {
+            "tier": tier, "book_name": book, "chapter": chapter,
+            "verse_start": 1, "verse_end": 5, "id": 1, "chunk_id": 1,
+            "distance": 0.1234, "rank": 0,
+            "citation": citation or f"{book} {chapter}:1-5",
+            "text": text,
+        }
+
+    def test_empty_query_renders_the_form(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._search_page("")
+        body = _body(handler)
+        assert "<form class='search'" in body
+        assert "ranked by meaning" in body
+
+    def test_results_link_to_chapter_pages(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[self._hit()])
+        handler = _handler_for(populated_db)
+        handler._search_page("beginning")
+        body = _body(handler)
+        assert "href='/book/genesis/1'" in body
+        assert "Genesis 1:1-5" in body
+
+    def test_book_tier_links_to_the_book_page(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[
+            self._hit(tier="book", chapter=0, citation="Genesis"),
+        ])
+        handler = _handler_for(populated_db)
+        handler._search_page("beginnings")
+        assert "href='/book/genesis'" in _body(handler)
+
+    def test_multiword_book_slug(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[
+            self._hit(book="1 Samuel", chapter=2, citation="1 Samuel 2:1-5"),
+        ])
+        handler = _handler_for(populated_db)
+        handler._search_page("hannah")
+        assert "href='/book/1-samuel/2'" in _body(handler)
+
+    def test_stored_text_is_escaped(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[
+            self._hit(text="<script>alert(1)</script>"),
+        ])
+        handler = _handler_for(populated_db)
+        handler._search_page("x")
+        body = _body(handler)
+        assert "<script>" not in body
+        assert "&lt;script&gt;" in body
+
+    def test_query_is_escaped_back_into_the_form(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[])
+        handler = _handler_for(populated_db)
+        handler._search_page("<script>x</script>")
+        body = _body(handler)
+        assert "<script>x</script>" not in body
+
+    def test_long_text_is_truncated(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[
+            self._hit(text="y" * 500),
+        ])
+        handler = _handler_for(populated_db)
+        handler._search_page("x")
+        assert " ..." in _body(handler)
+
+    def test_no_results_suggests_embedding(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[])
+        handler = _handler_for(populated_db)
+        handler._search_page("x")
+        assert "bible-study embed" in _body(handler)
+
+    def test_failure_renders_a_message_not_a_traceback(self, populated_db, mocker):
+        from bible_study.vectors import VectorIndexError
+        mocker.patch(
+            "bible_study.vectors.embed_query",
+            side_effect=VectorIndexError("No vector index found"),
+        )
+        handler = _handler_for(populated_db)
+        handler._search_page("x")
+        body = _body(handler)
+        assert "Search unavailable" in body
+        assert "No vector index found" in body
+
+    def test_ollama_down_is_reported(self, populated_db, mocker):
+        mocker.patch(
+            "bible_study.vectors.embed_query",
+            side_effect=RuntimeError("Ollama embedding failed"),
+        )
+        handler = _handler_for(populated_db)
+        handler._search_page("x")
+        assert "Ollama embedding failed" in _body(handler)
+
+
+class TestAskPage:
+    """/ask rendering."""
+
+    def _result(self, dropped=0):
+        return {
+            "question": "why?",
+            "answer": "Because God called him.",
+            "sources": [
+                {"citation": "Genesis 12:1-5", "kind": "verses",
+                 "book_name": "Genesis", "chapter": 12},
+                {"citation": "Genesis", "kind": "book-summary",
+                 "book_name": "Genesis", "chapter": 0},
+            ],
+            "dropped": dropped,
+            "prompt": "P",
+        }
+
+    def test_empty_query_renders_the_form(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._ask_page("")
+        body = _body(handler)
+        assert "<form class='search'" in body
+        assert "takes a few seconds" in body
+
+    def test_answer_and_sources_are_rendered(self, populated_db, mocker):
+        mocker.patch(
+            "bible_study.rag.answer_question", return_value=self._result(),
+        )
+        handler = _handler_for(populated_db)
+        handler._ask_page("why?")
+        body = _body(handler)
+        assert "Because God called him." in body
+        assert "href='/book/genesis/12'" in body
+        assert "href='/book/genesis'" in body
+
+    def test_dropped_sources_are_reported(self, populated_db, mocker):
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            return_value=self._result(dropped=4),
+        )
+        handler = _handler_for(populated_db)
+        handler._ask_page("why?")
+        assert "4 more omitted" in _body(handler)
+
+    def test_answer_is_escaped(self, populated_db, mocker):
+        result = self._result()
+        result["answer"] = "<script>alert(1)</script>"
+        mocker.patch("bible_study.rag.answer_question", return_value=result)
+        handler = _handler_for(populated_db)
+        handler._ask_page("why?")
+        body = _body(handler)
+        assert "<script>" not in body
+
+    def test_failure_renders_a_message(self, populated_db, mocker):
+        mocker.patch(
+            "bible_study.rag.answer_question",
+            side_effect=RuntimeError("Nothing in the vector index matched"),
+        )
+        handler = _handler_for(populated_db)
+        handler._ask_page("why?")
+        body = _body(handler)
+        assert "Could not answer" in body
+        assert "Nothing in the vector index matched" in body
+
+
+class TestSearchOverTheWire:
+    """Real HTTPServer -- mocked handlers cannot catch protocol errors."""
+
+    def _serve(self, db_path):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from bible_study.browser import _SQLiteHandler
+
+        def handler(*args, **kwargs):
+            return _SQLiteHandler(*args, db_path=db_path, **kwargs)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, server.server_address[1]
+
+    def _get(self, port, path):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}{path}", timeout=10,
+            ) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, ""
+
+    def test_search_form_returns_200(self, populated_db):
+        server, port = self._serve(populated_db)
+        try:
+            status, body = self._get(port, "/search")
+            assert status == 200
+            assert "<form class='search'" in body
+        finally:
+            server.shutdown()
+
+    def test_ask_form_returns_200(self, populated_db):
+        server, port = self._serve(populated_db)
+        try:
+            status, _ = self._get(port, "/ask")
+            assert status == 200
+        finally:
+            server.shutdown()
+
+    def test_search_with_a_query_returns_200(self, populated_db, mocker):
+        mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
+        mocker.patch("bible_study.vectors.search", return_value=[])
+        server, port = self._serve(populated_db)
+        try:
+            status, _ = self._get(port, "/search?q=covenant")
+            assert status == 200
+        finally:
+            server.shutdown()

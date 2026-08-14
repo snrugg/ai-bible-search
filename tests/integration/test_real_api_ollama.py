@@ -56,3 +56,33 @@ class TestEndToEnd:
         summary = summarize_chapter("Genesis", 1, db_path=tmp_db)
         assert len(summary) > 0
 
+
+
+@pytest.mark.skip(reason="Requires live Ollama + qwen3-embedding; run manually")
+class TestRealEmbedding:
+    """Test against a real local embedding model."""
+
+    def test_embed_returns_the_expected_width(self):
+        from bible_study.ollama import EMBED_DIMS, embed
+        vectors = embed(["In the beginning God created the heaven and the earth."])
+        assert len(vectors) == 1
+        assert len(vectors[0]) == EMBED_DIMS
+
+    def test_embed_batches(self):
+        from bible_study.ollama import embed
+        assert len(embed(["light", "darkness", "water"])) == 3
+
+    def test_query_and_document_encodings_differ(self):
+        from bible_study.ollama import embed
+        doc = embed(["light"], is_query=False)[0]
+        qry = embed(["light"], is_query=True)[0]
+        assert doc != qry
+
+    def test_server_returns_unit_vectors(self):
+        """normalize() is a no-op today; this is what would tell us otherwise."""
+        import math
+        from bible_study.ollama import embed
+        vector = embed(["In the beginning"])[0]
+        assert math.isclose(
+            math.sqrt(sum(x * x for x in vector)), 1.0, rel_tol=1e-4,
+        )

@@ -115,8 +115,15 @@ ask: |
   - Cite the reference (e.g. Genesis 1:1-5) for every claim you make.
   - Prefer the King James Version text over the summaries where they
     overlap; the summaries are study notes, not scripture.
-  - If the sources do not answer the question, say so plainly rather than
-    filling the gap from memory.
+  - The sources are simply the nearest passages found by similarity
+    search, so they are always populated.  Their presence is not evidence
+    that they are relevant.  Use the ones that bear on the question and
+    ignore the rest.
+  - If none of them bear on the question, say plainly that the sources do
+    not address it, and stop.  Do not answer by analogy from loosely
+    related passages, and do not substitute general principles for an
+    answer the sources cannot give.
+  - Answer only what was asked.
   - Keep the tone neutral and informative -- like a study guide entry.
   - Where the sources disagree or are ambiguous, say so rather than
     resolving it silently.

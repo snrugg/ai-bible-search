@@ -291,7 +291,7 @@ class TestFinalBranches:
 
         mocker.patch.object(browser, "_SQLiteHandler", FakeHandler)
         mocker.patch.object(browser.webbrowser, "open")
-        server = mocker.patch.object(browser, "HTTPServer")
+        server = mocker.patch.object(browser, "ThreadingHTTPServer")
         db = tmp_path / "bible.db"
         browser.serve(port=8099, db_path=db)
         factory = server.call_args[0][1]

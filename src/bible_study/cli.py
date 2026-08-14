@@ -139,7 +139,15 @@ def status(data_dir: Path | None) -> None:
     total, summed = get_chapter_progress(db_path, book_names())
     click.echo(f"Total chapters: {total}")
     click.echo(f"Summarized:     {summed}")
-    click.echo(f"Remaining:     {total - summed}")
+    click.echo(f"Remaining:      {total - summed}")
+
+    from bible_study.db import chunk_counts
+    counts = chunk_counts(db_path)
+    if counts:
+        chunks = sum(c[0] for c in counts.values())
+        embedded = sum(c[1] for c in counts.values())
+        click.echo(f"Chunks:         {chunks}")
+        click.echo(f"Embedded:       {embedded}")
 
 
 @cli.command()
@@ -291,3 +299,163 @@ def config_edit() -> None:
         webbrowser.open(str(cfg.resolve()))
     else:
         click.echo(f"Config file not found: {cfg}")
+
+@cli.command()
+@_data_dir_option
+@click.option(
+    "--rebuild",
+    is_flag=True,
+    default=False,
+    help="Discard existing vectors and embed everything from scratch.",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=None,
+    help="Chunks sent per Ollama request.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Only embed the first N pending chunks (useful as a smoke test).",
+)
+def embed(
+    data_dir: Path | None,
+    rebuild: bool,
+    batch_size: int | None,
+    limit: int | None,
+) -> None:
+    """Build the vector search index over verses and summaries."""
+    from bible_study import vectors as _vec
+    from bible_study.db import chunk_counts, init_db
+    from bible_study.ollama import check_model_available, health_check
+    from bible_study.prompts import get_embed_dims, get_embed_model
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        raise click.ClickException(
+            f"No database at {db_path} -- run `init` first.",
+        )
+    init_db(db_path)
+
+    if not health_check():
+        raise click.ClickException(
+            "Cannot reach Ollama at http://localhost:11434 -- start it first.",
+        )
+
+    model = get_embed_model()
+    dims = get_embed_dims()
+    click.echo(f"Using embedding model: {model} ({dims} dims)")
+    if not check_model_available(model_name=model):
+        click.echo(
+            f"Warning: '{model}' was not listed by Ollama. "
+            f"Run `ollama pull {model}`, or check the embed_model key "
+            f"in config.yaml.",
+        )
+
+    try:
+        _vec.init_vec(db_path, dims=dims, model=model)
+        if rebuild:
+            click.echo(f"Cleared {_vec.clear_vectors(db_path)} vectors.")
+        made = _vec.rebuild_chunks(db_path)
+        click.echo(f"Chunked {made} passages and summaries.")
+        pending = sum(
+            total - done for total, done in chunk_counts(db_path).values()
+        )
+        done = _vec.embed_all(db_path, batch_size=batch_size, limit=limit)
+    except (_vec.VectorSupportError, _vec.VectorIndexError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if pending and not done:
+        progress = data_dir / "EMBED_PROGRESS.md"
+        raise click.ClickException(
+            f"All {pending} chunks failed to embed. "
+            f"Check that Ollama is running and see {progress} for details.",
+        )
+
+    click.echo(f"Embedded {done} chunks.")
+    click.echo("Done!")
+
+
+@cli.command()
+@click.argument("question", nargs=-1, required=True)
+@_data_dir_option
+@click.option(
+    "-k",
+    "--top-k",
+    type=int,
+    default=8,
+    help="Verse passages to retrieve; the summary tiers scale down from this.",
+)
+@click.option(
+    "--show-sources/--no-show-sources",
+    default=True,
+    help="List the references used to build the answer.",
+)
+def ask(
+    question: tuple[str, ...],
+    data_dir: Path | None,
+    top_k: int,
+    show_sources: bool,
+) -> None:
+    """Answer a question using the indexed Bible text and summaries."""
+    from bible_study import vectors as _vec
+    from bible_study.ollama import (
+        PromptTooLongError,
+        check_model_available,
+        health_check,
+    )
+    from bible_study.prompts import get_embed_model, get_model
+    from bible_study.rag import answer_question
+
+    text = " ".join(question).strip()
+    if not text:
+        raise click.ClickException("Ask a question, e.g. `ask \"who is Ruth?\"`.")
+
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        raise click.ClickException(
+            f"No database at {db_path} -- run `init` first.",
+        )
+
+    if not health_check():
+        raise click.ClickException(
+            "Cannot reach Ollama at http://localhost:11434 -- start it first.",
+        )
+
+    model = get_model()
+    embed_model = get_embed_model()
+    click.echo(f"Using Ollama model: {model}")
+    click.echo(f"Using embedding model: {embed_model}")
+    for name in (model, embed_model):
+        if not check_model_available(model_name=name):
+            click.echo(f"Warning: '{name}' was not listed by Ollama.")
+
+    try:
+        result = answer_question(
+            text,
+            db_path,
+            k_verse=top_k,
+            k_chapter=max(1, top_k // 2),
+            k_book=max(1, top_k // 4),
+        )
+    except (_vec.VectorSupportError, _vec.VectorIndexError,
+            PromptTooLongError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo("")
+    click.echo(result["answer"].strip())
+
+    if show_sources:
+        click.echo("")
+        click.echo("Sources:")
+        for source in result["sources"]:
+            click.echo(f"  - {source['citation']}")
+        if result["dropped"]:
+            click.echo(
+                f"  ({result['dropped']} more omitted to fit the "
+                f"context window)",
+            )
