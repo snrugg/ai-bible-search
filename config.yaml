@@ -1,19 +1,51 @@
-# Bible Study — Prompt Templates
+# Bible Study — Configuration
 # Edit these YAML templates to customize how summaries are generated.
 # Placeholders like {book_name}, {chapter_number}, and {chapter_text}
 # are replaced at runtime with actual values.
 
+# Name of the local Ollama model used for every summary call.
+# Must match a model shown by `ollama list` (tag included).
+# ollama_model: qwen3.6:35b-a3b-nvfp4
+ollama_model: gemma3:4b
+
+# Context window (in tokens) requested from Ollama on every call.
+#
+# This is sent explicitly as options.num_ctx rather than left to the server,
+# which otherwise autodetects 4k/32k/256k from available VRAM.  It matters
+# because Ollama does NOT error on an over-long prompt: llama.cpp runs with
+# --context-shift and drops the OLDEST tokens, i.e. the instruction header,
+# then answers anyway.  Book summaries for long books (Psalms is ~69k tokens
+# of chapter summaries) were being written from only the last ~40 chapters.
+#
+# Prompts are measured against this value before being sent, so setting it
+# too low now produces a loud error instead of a quietly truncated summary.
+# Larger windows cost memory; 131072 fits gemma3:4b entirely on GPU here.
+ollama_num_ctx: 131072
+
 chapter_summary: |
-  Summarize the following chapter of the King James Version (KJV) Bible.
+  Summarize the following chapter of the King James Version (KJV) Bible.  You are a conservative Christian Bible scholar.
 
   Book: {book_name}
   Chapter: {chapter_number}
 
   Guidelines:
   - Identify key events, themes, and any significant people or places mentioned.
+  - Identify any teaching about:
+    - God
+    - Human beings
+    - Commands to obey
+    - Promises by God
   - Capture the main narrative or teaching in 1–2 paragraphs.
   - Keep the tone neutral and informative — like a study guide entry.
   - Do NOT add commentary, interpretation, or external references.
+
+  Output Template:
+  - Key events, themes, and significant people or places:
+    (Bulleted list of complete sentences)
+  - Key teachings about God, human beings, commands to obey or promises to rely on:
+    (Bulleted list of complete sentences)
+  - Main narrative or teaching:
+    (1-2 paragraph summary)
 
   Text:
   {chapter_text}
@@ -21,14 +53,33 @@ chapter_summary: |
   Provide your summary below.
 
 book_summary: |
-  Create an aggregate summary of the entire book of {book_name} from the King James Version (KJV) Bible.
+  Create an aggregate summary of the entire book of {book_name} from the King James Version (KJV) Bible.  You are a conservative Christian Bible scholar.
 
   This book contains {chapter_count} chapters in total.
 
   Guidelines:
   - Synthesize the main narrative arc across all chapters.
   - Highlight major themes, key figures, and theological concepts.
-  - Write in 2–3 paragraphs: overview, key events/narrative, significance.
+  - Identify any teaching about:
+    - God
+    - Human beings
+    - Commands to obey
+    - Promises by God
+  - Write in 1-5 paragraphs: overview, key events/narrative, significance.
   - Keep the tone neutral and informative — like a study guide entry.
+
+  Output Template:
+  - Key events, themes, and significant people or places:
+    (Bulleted list of complete sentences)
+  - Key teachings about God, human beings, commands to obey or promises to rely on:
+    (Bulleted list of complete sentences)
+  - Main narrative or teaching:
+    (1-5 paragraph summary, perhaps 1 paragraph per 5-10 chapters)
+
+  Base your summary only on the chapter summaries below. Do not add material
+  from outside them.
+
+  Chapter summaries:
+  {chapter_summaries}
 
   Provide your summary below.

@@ -65,10 +65,19 @@ def summarize(data_dir: Path | None) -> None:
     db_path = data_dir / "bible.db"
     init_db(db_path)
 
-    from bible_study.ollama import health_check
+    from bible_study.ollama import check_model_available, health_check
+    from bible_study.prompts import get_model
     if not health_check():
         raise click.ClickException(
             "Cannot reach Ollama at http://localhost:11434 -- start it first.",
+        )
+
+    model = get_model()
+    click.echo(f"Using Ollama model: {model}")
+    if not check_model_available(model_name=model):
+        click.echo(
+            f"Warning: '{model}' was not listed by Ollama. "
+            "Check `ollama list` or the ollama_model key in config.yaml.",
         )
 
     pending = get_unsummarized_chapters(db_path, book_names())

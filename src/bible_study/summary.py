@@ -16,6 +16,8 @@ import bible_study.ollama as _ol
 from bible_study.prompts import (
     build_book_summary_prompt,
     build_chapter_prompt,
+    get_model,
+    get_num_ctx,
     load_config,
 )
 
@@ -33,7 +35,7 @@ def summarize_chapter(
 
     Raises ``RuntimeError`` if no config file can be found.
     """
-    ollama_kwargs = ollama_kwargs or {}
+    ollama_kwargs = dict(ollama_kwargs or {})
 
     # -- 1. Get verse text -------------------------------------------------
     verses_text: str = ""
@@ -65,6 +67,9 @@ def summarize_chapter(
     prompt = build_chapter_prompt(config, book_name, verses_text, chapter_num)
 
     # -- 3. Call Ollama ----------------------------------------------------
+    # An explicit caller-supplied model always wins over config.yaml.
+    ollama_kwargs.setdefault("model", get_model(config))
+    ollama_kwargs.setdefault("num_ctx", get_num_ctx(config))
     summary = _ol.generate(prompt, **ollama_kwargs)
 
     # -- 4. Store in DB ----------------------------------------------------
@@ -85,7 +90,7 @@ def summarize_book(
 
     Returns the generated book-level summary text.
     """
-    ollama_kwargs = ollama_kwargs or {}
+    ollama_kwargs = dict(ollama_kwargs or {})
 
     if db_path is None:
         raise ValueError("db_path is required to retrieve chapter summaries")
@@ -110,7 +115,11 @@ def summarize_book(
 
     # Build and call prompt
     config = load_config()
-    prompt = build_book_summary_prompt(config, book_name, num_chapters)
+    prompt = build_book_summary_prompt(
+        config, book_name, num_chapters, agg_text,
+    )
+    ollama_kwargs.setdefault("model", get_model(config))
+    ollama_kwargs.setdefault("num_ctx", get_num_ctx(config))
     summary = _ol.generate(prompt, **ollama_kwargs)
 
     # Store book-level summary

@@ -72,6 +72,17 @@ class TestSummarizeChapterPaths:
         )
         assert mock_gen.call_args.kwargs["model"] == "custom"
 
+    def test_uses_model_from_config(self, db_path, mocker):
+        from bible_study.summary import summarize_chapter
+        mock_gen = mocker.patch("bible_study.ollama.generate", return_value="x")
+        mocker.patch(
+            "bible_study.summary.load_config",
+            return_value={"ollama_model": "configured-model"},
+        )
+        upsert_verses(db_path, "Genesis", 1, [(1, "text")])
+        summarize_chapter("Genesis", 1, db_path=db_path)
+        assert mock_gen.call_args.kwargs["model"] == "configured-model"
+
 
 class TestSummarizeBookPaths:
     """Cover summarize_book error and persistence branches."""
@@ -97,11 +108,30 @@ class TestSummarizeBookPaths:
     def test_prompt_includes_aggregated_chapters(self, db_path, mocker):
         from bible_study.summary import summarize_book
         mock_gen = mocker.patch("bible_study.ollama.generate", return_value="ok")
+        mocker.patch(
+            "bible_study.summary.load_config",
+            return_value={
+                "book_summary": "{book_name}/{chapter_count}\n{chapter_summaries}",
+            },
+        )
         save_summary(db_path, "Genesis", 1, "first chapter")
         save_summary(db_path, "Genesis", 2, "second chapter")
         summarize_book("Genesis", db_path=db_path)
         prompt = mock_gen.call_args[0][0]
         assert "Genesis" in prompt
+        # The chapter summaries themselves must reach the model, labelled
+        # and in order -- not just the book name and chapter count.
+        assert "Chapter 1: first chapter" in prompt
+        assert "Chapter 2: second chapter" in prompt
+        assert prompt.index("first chapter") < prompt.index("second chapter")
+
+    def test_prompt_carries_chapter_text_under_the_real_config(self, db_path, mocker):
+        """The shipped config.yaml template must expose {chapter_summaries}."""
+        from bible_study.summary import summarize_book
+        mock_gen = mocker.patch("bible_study.ollama.generate", return_value="ok")
+        save_summary(db_path, "Genesis", 1, "a distinctive chapter summary")
+        summarize_book("Genesis", db_path=db_path)
+        assert "a distinctive chapter summary" in mock_gen.call_args[0][0]
 
     def test_unknown_book_is_not_persisted(self, db_path, mocker):
         from bible_study.db import get_saved_books

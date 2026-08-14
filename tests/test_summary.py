@@ -44,6 +44,78 @@ class TestSummarizeBook:
         assert result == "Book overview."
 
 
+class TestContextWindowPlumbing:
+    """The configured num_ctx reaches every Ollama call."""
+
+    def _seeded_db(self, tmp_path):
+        from bible_study.db import init_db, save_summary, upsert_verses
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "verse text")])
+        save_summary(db_path, "Genesis", 1, "summary text")
+        return db_path
+
+    def test_chapter_summary_passes_configured_num_ctx(
+        self, tmp_path, monkeypatch, mocker,
+    ):
+        mock_gen = mocker.patch("bible_study.ollama.generate", return_value="S")
+        db_path = self._seeded_db(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "chapter_summary: |\n  {chapter_text}\nollama_num_ctx: 65536\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        from bible_study.summary import summarize_chapter
+        summarize_chapter("Genesis", 1, db_path=db_path)
+        assert mock_gen.call_args.kwargs["num_ctx"] == 65536
+
+    def test_book_summary_passes_configured_num_ctx(
+        self, tmp_path, monkeypatch, mocker,
+    ):
+        mock_gen = mocker.patch("bible_study.ollama.generate", return_value="S")
+        db_path = self._seeded_db(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "book_summary: |\n  {chapter_summaries}\nollama_num_ctx: 65536\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        from bible_study.summary import summarize_book
+        summarize_book("Genesis", db_path=db_path)
+        assert mock_gen.call_args.kwargs["num_ctx"] == 65536
+
+    def test_explicit_kwarg_overrides_config(self, tmp_path, monkeypatch, mocker):
+        mock_gen = mocker.patch("bible_study.ollama.generate", return_value="S")
+        db_path = self._seeded_db(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "book_summary: |\n  {chapter_summaries}\nollama_num_ctx: 65536\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        from bible_study.summary import summarize_book
+        summarize_book("Genesis", db_path=db_path, ollama_kwargs={"num_ctx": 4096})
+        assert mock_gen.call_args.kwargs["num_ctx"] == 4096
+
+    def test_oversized_book_summary_raises_instead_of_truncating(
+        self, tmp_path, monkeypatch,
+    ):
+        """The Psalms failure mode: too many chapter summaries to fit."""
+        from bible_study.db import init_db, save_summary, upsert_verses
+        from bible_study.ollama import PromptTooLongError
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        for chapter in range(1, 51):
+            upsert_verses(db_path, "Genesis", chapter, [(1, "verse text")])
+            save_summary(db_path, "Genesis", chapter, "x" * 2000)
+        (tmp_path / "config.yaml").write_text(
+            "book_summary: |\n  {chapter_summaries}\nollama_num_ctx: 4096\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        from bible_study.summary import summarize_book
+        with pytest.raises(PromptTooLongError):
+            summarize_book("Genesis", db_path=db_path)
+
+
 class TestExportMarkdowns:
     """Test markdown export functionality."""
 

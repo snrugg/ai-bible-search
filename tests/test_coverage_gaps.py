@@ -155,6 +155,31 @@ class TestPromptsRemainingBranches:
         result = build_book_summary_prompt(config, "Genesis", 50)
         assert result == "CFG Genesis has 50"
 
+    def test_book_prompt_fills_chapter_summaries_placeholder(self):
+        from bible_study.prompts import build_book_summary_prompt
+        config = {"book_summary": "CFG {book_name}: {chapter_summaries}"}
+        result = build_book_summary_prompt(config, "Genesis", 50, "Chapter 1: light")
+        assert result == "CFG Genesis: Chapter 1: light"
+
+    def test_book_prompt_drops_summaries_when_template_omits_placeholder(self):
+        from bible_study.prompts import build_book_summary_prompt
+        config = {"book_summary": "CFG {book_name} has {chapter_count}"}
+        result = build_book_summary_prompt(config, "Genesis", 50, "Chapter 1: light")
+        assert result == "CFG Genesis has 50"
+
+    def test_inline_book_prompt_appends_source_block(self):
+        from bible_study.prompts import build_inline_book_prompt
+        bare = build_inline_book_prompt("Genesis", 50)
+        with_sources = build_inline_book_prompt("Genesis", 50, "Chapter 1: light")
+        assert "Chapter 1: light" in with_sources
+        assert with_sources.startswith(bare)
+
+    def test_inline_book_prompt_omits_block_for_blank_summaries(self):
+        from bible_study.prompts import build_inline_book_prompt
+        assert build_inline_book_prompt("Genesis", 50, "   ") == (
+            build_inline_book_prompt("Genesis", 50)
+        )
+
 
 class TestApiRemainingBranches:
     """Cover download_all defaults, failures, and cache-scan edge cases."""

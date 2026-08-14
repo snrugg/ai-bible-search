@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
+MODEL_KEY = "ollama_model"
+NUM_CTX_KEY = "ollama_num_ctx"
 
 
 def load_config(path: str | None = None) -> dict[str, str]:
@@ -55,6 +57,45 @@ def _load_file(path: Path) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     return {k: str(v) for k, v in data.items()}
+
+
+def get_model(config: dict[str, str] | None = None) -> str:
+    """Return the Ollama model name configured in ``config.yaml``.
+
+    Falls back to :data:`bible_study.ollama.MODEL` when the key is absent,
+    blank, or no config file can be located.  When *config* is omitted the
+    file is loaded on demand.
+    """
+    import bible_study.ollama as _ol
+
+    if config is None:
+        try:
+            config = load_config()
+        except FileNotFoundError:
+            config = {}
+    return config.get(MODEL_KEY, "").strip() or _ol.MODEL
+
+
+def get_num_ctx(config: dict[str, str] | None = None) -> int:
+    """Return the context window configured in ``config.yaml``.
+
+    Falls back to :data:`bible_study.ollama.NUM_CTX` when the key is absent,
+    blank, or not a positive integer.  When *config* is omitted the file is
+    loaded on demand.
+    """
+    import bible_study.ollama as _ol
+
+    if config is None:
+        try:
+            config = load_config()
+        except FileNotFoundError:
+            config = {}
+    raw = config.get(NUM_CTX_KEY, "")
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return _ol.NUM_CTX
+    return value if value > 0 else _ol.NUM_CTX
 
 
 def render(template_name: str, config: dict[str, str], **kwargs: Any) -> str:
@@ -115,8 +156,13 @@ def build_book_summary_prompt(
     config: dict[str, str],
     book_name: str,
     chapter_count: int,
+    chapter_summaries: str = "",
 ) -> str:
     """Build a book-level aggregate prompt using the stored template.
+
+    *chapter_summaries* is the concatenated per-chapter summary text that
+    fills the ``{chapter_summaries}`` placeholder.  Templates that omit the
+    placeholder still render fine -- the text is simply dropped.
 
     Falls back to an inline template when the config has no
     ``book_summary`` key.
@@ -127,8 +173,9 @@ def build_book_summary_prompt(
             config,
             book_name=book_name,
             chapter_count=chapter_count,
+            chapter_summaries=chapter_summaries,
         )
-    return _inline_book_prompt(book_name, chapter_count)
+    return _inline_book_prompt(book_name, chapter_count, chapter_summaries)
 
 
 # -- Inline fallback templates -------------------------------------------- #
@@ -155,6 +202,14 @@ _inline_book_template = (
 )
 
 
+_inline_book_sources_template = (
+    "\n"
+    "\n"
+    "Base your summary only on these chapter summaries:\n"
+    "{chapter_summaries}"
+)
+
+
 def _inline_chapter_prompt(
     book_name: str,
     chapter_number: int,
@@ -169,12 +224,24 @@ def _inline_chapter_prompt(
     )
 
 
-def _inline_book_prompt(book_name: str, chapter_count: int) -> str:
-    """Inline fallback for book-level summarisation."""
+def _inline_book_prompt(
+    book_name: str,
+    chapter_count: int,
+    chapter_summaries: str = "",
+) -> str:
+    """Inline fallback for book-level summarisation.
+
+    The source-material block is appended only when there is text to put in
+    it, so the no-summaries case reads the same as it always did.
+    """
+    template = _inline_book_template
+    if chapter_summaries.strip():
+        template += _inline_book_sources_template
     return _render_template(
-        _inline_book_template,
+        template,
         book_name=book_name,
         chapter_count=chapter_count,
+        chapter_summaries=chapter_summaries,
     )
 
 
@@ -190,6 +257,10 @@ def build_inline_chapter_prompt(
     return _inline_chapter_prompt(book_name, chapter_number, chapter_text)
 
 
-def build_inline_book_prompt(book_name: str, chapter_count: int) -> str:
+def build_inline_book_prompt(
+    book_name: str,
+    chapter_count: int,
+    chapter_summaries: str = "",
+) -> str:
     """Build a book-level prompt without needing any config file."""
-    return _inline_book_prompt(book_name, chapter_count)
+    return _inline_book_prompt(book_name, chapter_count, chapter_summaries)

@@ -63,3 +63,88 @@ class TestYamlConfig:
         config = load_config(cfg)
         with pytest.raises(KeyError):
             render("nonexistent_key", config)
+
+
+class TestModelConfig:
+    """Test resolution of the ollama_model config key."""
+
+    def test_get_model_reads_configured_value(self, tmp_path):
+        from bible_study.prompts import get_model, load_config
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("ollama_model: llama3:8b\n")
+        assert get_model(load_config(cfg)) == "llama3:8b"
+
+    def test_get_model_falls_back_to_default(self):
+        from bible_study.ollama import MODEL
+        from bible_study.prompts import get_model
+        assert get_model({}) == MODEL
+
+    def test_get_model_ignores_blank_value(self):
+        from bible_study.ollama import MODEL
+        from bible_study.prompts import get_model
+        assert get_model({"ollama_model": "   "}) == MODEL
+
+    def test_get_model_loads_config_when_omitted(self, tmp_path, monkeypatch):
+        from bible_study.prompts import get_model
+        (tmp_path / "config.yaml").write_text("ollama_model: mistral:7b\n")
+        monkeypatch.chdir(tmp_path)
+        assert get_model() == "mistral:7b"
+
+    def test_get_model_falls_back_when_no_config_file(self, tmp_path, monkeypatch):
+        from bible_study import prompts
+        from bible_study.ollama import MODEL
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        monkeypatch.setattr(
+            prompts, "load_config",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
+        )
+        assert prompts.get_model() == MODEL
+
+
+class TestNumCtxConfig:
+    """Test resolution of the ollama_num_ctx config key."""
+
+    def test_get_num_ctx_reads_configured_value(self, tmp_path):
+        from bible_study.prompts import get_num_ctx, load_config
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("ollama_num_ctx: 131072\n")
+        assert get_num_ctx(load_config(cfg)) == 131072
+
+    def test_get_num_ctx_falls_back_to_default(self):
+        from bible_study.ollama import NUM_CTX
+        from bible_study.prompts import get_num_ctx
+        assert get_num_ctx({}) == NUM_CTX
+
+    def test_get_num_ctx_ignores_blank_value(self):
+        from bible_study.ollama import NUM_CTX
+        from bible_study.prompts import get_num_ctx
+        assert get_num_ctx({"ollama_num_ctx": "   "}) == NUM_CTX
+
+    def test_get_num_ctx_ignores_non_numeric_value(self):
+        from bible_study.ollama import NUM_CTX
+        from bible_study.prompts import get_num_ctx
+        assert get_num_ctx({"ollama_num_ctx": "big"}) == NUM_CTX
+
+    def test_get_num_ctx_ignores_non_positive_value(self):
+        from bible_study.ollama import NUM_CTX
+        from bible_study.prompts import get_num_ctx
+        assert get_num_ctx({"ollama_num_ctx": "0"}) == NUM_CTX
+        assert get_num_ctx({"ollama_num_ctx": "-1"}) == NUM_CTX
+
+    def test_get_num_ctx_loads_config_when_omitted(self, tmp_path, monkeypatch):
+        from bible_study.prompts import get_num_ctx
+        (tmp_path / "config.yaml").write_text("ollama_num_ctx: 8192\n")
+        monkeypatch.chdir(tmp_path)
+        assert get_num_ctx() == 8192
+
+    def test_get_num_ctx_falls_back_when_no_config_file(self, tmp_path, monkeypatch):
+        from bible_study import prompts
+        from bible_study.ollama import NUM_CTX
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        monkeypatch.setattr(
+            prompts, "load_config",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
+        )
+        assert prompts.get_num_ctx() == NUM_CTX
