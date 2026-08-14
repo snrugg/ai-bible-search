@@ -1,5 +1,7 @@
 """Tests for bible_study/db -- SQLite schema and CRUD operations."""
 
+from contextlib import closing
+
 import pytest
 
 from bible_study.db import (
@@ -31,7 +33,7 @@ class TestSchema:
 
     def test_init_creates_all_tables(self, db_path):
         import sqlite3
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             tables = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'",
             ).fetchall()
@@ -184,7 +186,7 @@ class TestChunkSchema:
 
     def test_init_db_creates_chunks_table(self, db_path):
         import sqlite3
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'",
             ).fetchone()
@@ -192,7 +194,7 @@ class TestChunkSchema:
 
     def test_init_db_creates_vec_meta_table(self, db_path):
         import sqlite3
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_meta'",
             ).fetchone()

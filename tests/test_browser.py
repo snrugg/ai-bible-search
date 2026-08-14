@@ -791,6 +791,7 @@ class TestSearchOverTheWire:
             assert "<form class='search'" in body
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_ask_form_returns_200(self, populated_db):
         server, port = self._serve(populated_db)
@@ -799,6 +800,7 @@ class TestSearchOverTheWire:
             assert status == 200
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_search_with_a_query_returns_200(self, populated_db, mocker):
         mocker.patch("bible_study.vectors.embed_query", return_value=[1.0])
@@ -809,3 +811,4 @@ class TestSearchOverTheWire:
             assert status == 200
         finally:
             server.shutdown()
+            server.server_close()

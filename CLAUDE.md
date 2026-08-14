@@ -26,7 +26,13 @@ Summary module uses `import bible_study.ollama as _ol` (not `from X import Y`) s
 
 ### SQLite Patterns
 
-All DB functions open/close connections within the function (context managers). Use `sqlite3.connect(str(path))` — never share connections across threads. Schema is in the `INIT_SQL` string at the top of `db.py`. Add UNIQUE constraints where logically appropriate.
+All DB functions open *and close* their own connection within the function — never share one across threads, and never hold one on an object (`browser.py` handlers keep a `Path`, not a connection).
+
+Always use `with closing(sqlite3.connect(str(path))) as conn:`. **`with sqlite3.connect(...)` alone does not close anything** — sqlite3's context manager is a *transaction* manager that commits or rolls back and leaves the connection open, so the bare form leaks one connection per call to the garbage collector. That produced ~13,000 `ResourceWarning`s across the test suite until it was fixed.
+
+Because `closing()` provides no implicit commit, **every write must call `conn.commit()` explicitly** before the block ends. Readers need nothing.
+
+Schema is in the `INIT_SQL` string at the top of `db.py`. Add UNIQUE constraints where logically appropriate — and remember NULLs are distinct in a UNIQUE index, so use `NOT NULL DEFAULT 0` sentinels for columns that do not apply to every row.
 
 ### Test Writing Rules
 

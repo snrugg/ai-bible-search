@@ -1,15 +1,8 @@
 """Shared fixtures for Bible Study tests."""
 
-import warnings
 from pathlib import Path
 
 import pytest
-
-
-# Suppress SQLite ResourceWarnings from test temp databases
-@pytest.fixture(autouse=True, scope="session")
-def resource_warnings():
-     warnings.filterwarnings("ignore", category=ResourceWarning)
 
 
 @pytest.fixture

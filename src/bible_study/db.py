@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 INIT_SQL = """
@@ -80,8 +81,9 @@ CREATE TABLE IF NOT EXISTS vec_meta (
 def init_db(path: Path) -> None:
     """Create the database schema if it does not already exist."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         conn.executescript(INIT_SQL)
+        conn.commit()
 
 
 def upsert_verses(
@@ -92,7 +94,7 @@ def upsert_verses(
 ) -> None:
     """Insert or replace verse texts for a book/chapter pair."""
     abbrev = book_name[:3].upper()
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         for verse_num, text in verses:
             conn.execute(
                   "INSERT OR REPLACE INTO verses "
@@ -107,7 +109,7 @@ def get_verses(
     path: Path, book_name: str, chapter_num: int
 ) -> list[dict]:
     """Return all verses for a book/chapter."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT verse, text FROM verses "
               "WHERE book_name=? AND chapter=? "
@@ -125,7 +127,7 @@ def get_chapter_text(path: Path, book_name: str, chapter_num: int) -> str:
 
 def verse_count(path: Path, book_name: str | None = None) -> int:
     """Count total verses; optionally filtered to book."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         if book_name is not None:
             cursor = conn.execute(
                   "SELECT COUNT(*) FROM verses WHERE book_name=?",
@@ -138,7 +140,7 @@ def verse_count(path: Path, book_name: str | None = None) -> int:
 
 def has_summary(path: Path, book_name: str, chapter_num: int) -> bool:
     """Return True if a summary exists for this chapter."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT COUNT(*) FROM chapter_summaries "
               "WHERE book_name=? AND chapter=?",
@@ -156,7 +158,7 @@ def save_summary(
 ) -> None:
     """Store (or replace) a chapter summary."""
     abbrev = book_name[:3].upper()
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         conn.execute(
               "INSERT OR REPLACE INTO chapter_summaries "
               "(book_name, book_abbrev, chapter, summary, prompt_used) "
@@ -170,7 +172,7 @@ def get_summary(
     path: Path, book_name: str, chapter_num: int
 ) -> str | None:
     """Return a stored summary, or None if missing."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT summary FROM chapter_summaries "
               "WHERE book_name=? AND chapter=?",
@@ -184,7 +186,7 @@ def get_unsummarized_chapters(
     path: Path, book_names: list[str],
 ) -> list[tuple[str, int]]:
     """Return (book, chapter) pairs that have no summary yet."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         verses = conn.execute(
               "SELECT DISTINCT book_name, chapter FROM verses",
           ).fetchall()
@@ -207,7 +209,7 @@ def save_book_summary(
     path: Path, book_name: str, abbrev: str, summary: str,
 ) -> None:
     """Store a book-level aggregate summary."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         conn.execute(
               "INSERT OR REPLACE INTO book_summaries "
               "(book_name, book_abbrev, summary) VALUES (?,?,?)",
@@ -218,7 +220,7 @@ def save_book_summary(
 
 def get_book_summary(path: Path, book_name: str) -> str | None:
     """Return the stored book-level summary, or None if missing."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT summary FROM book_summaries WHERE book_name=?",
               (book_name,),
@@ -229,7 +231,7 @@ def get_book_summary(path: Path, book_name: str) -> str | None:
 
 def get_stored_chapters(path: Path, book_name: str) -> list[int]:
     """Return chapter numbers that have verse text stored, in order."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT DISTINCT chapter FROM verses "
               "WHERE book_name=? ORDER BY chapter",
@@ -240,7 +242,7 @@ def get_stored_chapters(path: Path, book_name: str) -> list[int]:
 
 def clear_chapter_summaries(path: Path, book_name: str | None = None) -> int:
     """Delete chapter summaries (all, or just one book's). Returns row count."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         if book_name is not None:
             cursor = conn.execute(
                   "DELETE FROM chapter_summaries WHERE book_name=?",
@@ -254,7 +256,7 @@ def clear_chapter_summaries(path: Path, book_name: str | None = None) -> int:
 
 def clear_book_summaries(path: Path, book_name: str | None = None) -> int:
     """Delete book-level summaries (all, or just one book's). Returns row count."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         if book_name is not None:
             cursor = conn.execute(
                   "DELETE FROM book_summaries WHERE book_name=?",
@@ -268,7 +270,7 @@ def clear_book_summaries(path: Path, book_name: str | None = None) -> int:
 
 def get_all_book_names(path: Path) -> list[str]:
     """Return distinct book names that have verses stored."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT DISTINCT book_name FROM verses ORDER BY book_name",
           )
@@ -279,7 +281,7 @@ def get_chapter_summaries_for_book(
     path: Path, book_name: str,
 ) -> list[dict]:
     """Return chapter summaries for book, ordered by chapter."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT chapter, summary FROM chapter_summaries "
               "WHERE book_name=? ORDER BY chapter",
@@ -295,7 +297,7 @@ def get_chapter_progress(
     """Return (total_chapters, summarized_chapters) for books."""
     total = 0
     summed = 0
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         verses = conn.execute(
               "SELECT DISTINCT book_name, chapter FROM verses",
           ).fetchall()
@@ -319,7 +321,7 @@ get_verses_for_chapter = get_verses
 
 def get_saved_books(path: Path) -> list[str]:
     """Return distinct book names from book_summaries table."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
                 'SELECT DISTINCT book_name FROM book_summaries ORDER BY book_name',
             )
@@ -366,7 +368,7 @@ def upsert_chunk(
     unchanged text stays marked as embedded -- that is what makes
     re-embedding incremental.
     """
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         conn.execute(
               "INSERT INTO chunks "
               "(tier, book_name, chapter, verse_start, verse_end, "
@@ -408,7 +410,7 @@ def get_stale_chunks(
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(sql, tuple(params))
         return [_chunk_row(row) for row in cursor.fetchall()]
 
@@ -418,7 +420,7 @@ def get_chunks_by_ids(path: Path, ids: list[int]) -> dict[int, dict]:
     if not ids:
         return {}
     placeholders = ",".join("?" for _ in ids)
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               f"{_CHUNK_SELECT} WHERE id IN ({placeholders})",
               tuple(int(i) for i in ids),
@@ -440,7 +442,7 @@ def mark_chunks_embedded(
     if not ids:
         return 0
     placeholders = ",".join("?" for _ in ids)
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               f"UPDATE chunks SET embedded_hash=text_hash, embed_model=?, "
               f"embed_dims=?, embedded_at=CURRENT_TIMESTAMP "
@@ -453,7 +455,7 @@ def mark_chunks_embedded(
 
 def chunk_counts(path: Path) -> dict[str, tuple[int, int]]:
     """Return ``{tier: (total_chunks, embedded_chunks)}``."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT tier, COUNT(*), "
               "SUM(CASE WHEN embedded_hash<>'' AND embedded_hash=text_hash "
@@ -465,7 +467,7 @@ def chunk_counts(path: Path) -> dict[str, tuple[int, int]]:
 
 def clear_chunks(path: Path) -> int:
     """Delete every chunk row. Returns the number deleted."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute("DELETE FROM chunks")
         conn.commit()
         return cursor.rowcount
@@ -473,7 +475,7 @@ def clear_chunks(path: Path) -> int:
 
 def get_meta(path: Path, key: str) -> str | None:
     """Return a vec_meta value, or None when unset."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         cursor = conn.execute(
               "SELECT value FROM vec_meta WHERE key=?", (key,),
           )
@@ -483,7 +485,7 @@ def get_meta(path: Path, key: str) -> str | None:
 
 def set_meta(path: Path, key: str, value: str) -> None:
     """Insert or overwrite a vec_meta value."""
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         conn.execute(
               "INSERT OR REPLACE INTO vec_meta (key, value) VALUES (?,?)",
               (key, str(value)),

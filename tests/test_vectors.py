@@ -6,6 +6,7 @@ no network and no embedding model.
 """
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -117,7 +118,7 @@ class TestInitVec:
     def test_creates_a_table_per_tier(self, db_path):
         from bible_study.vectors import _VEC_TABLES, init_vec
         init_vec(db_path, dims=4, model="fake")
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             names = {
                 row[0] for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'",
