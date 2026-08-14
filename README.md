@@ -1,6 +1,6 @@
 # Bible Study — KJV Index, Summary & Semantic Search
 
-[![tests](https://github.com/GITHUB-USER/bible-study/actions/workflows/tests.yml/badge.svg)](https://github.com/GITHUB-USER/bible-study/actions/workflows/tests.yml)
+[![tests](https://github.com/snrugg/ai-bible-search/actions/workflows/tests.yml/badge.svg)](https://github.com/snrugg/ai-bible-search/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 An indexed, summarized, semantically searchable version of the entire King James
@@ -42,7 +42,7 @@ respectively — they are not interchangeable.
 ### Installation
 
 ```bash
-git clone https://github.com/GITHUB-USER/bible-study.git && cd bible-study
+git clone https://github.com/snrugg/ai-bible-search.git && cd ai-bible-search
 uv sync
 git config core.hooksPath .githooks   # enable the pre-commit hook
 ```

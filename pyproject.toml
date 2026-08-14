@@ -30,12 +30,10 @@ dependencies = [
 [project.scripts]
 bible-study = "bible_study.cli:cli"
 
-# Replace GITHUB-USER once the repo exists:
-#     grep -rl GITHUB-USER . --exclude-dir=.git | xargs sed -i '' 's|GITHUB-USER|yourname|g'
 [project.urls]
-Homepage = "https://github.com/GITHUB-USER/bible-study"
-Repository = "https://github.com/GITHUB-USER/bible-study"
-Issues = "https://github.com/GITHUB-USER/bible-study/issues"
+Homepage = "https://github.com/snrugg/ai-bible-search"
+Repository = "https://github.com/snrugg/ai-bible-search"
+Issues = "https://github.com/snrugg/ai-bible-search/issues"
 
 [build-system]
 requires = ["hatchling"]
