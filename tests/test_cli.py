@@ -136,14 +136,34 @@ class TestViewCommand:
         mock_serve = mocker.patch("bible_study.cli.browse")
         result = runner.invoke(cli, ["view"])
         assert result.exit_code == 0
-        mock_serve.assert_called_once_with(port=8080)
+        assert mock_serve.call_args.kwargs["port"] == 8080
 
     def test_view_accepts_custom_port(self, runner, mocker):
         from bible_study.cli import cli
         mock_serve = mocker.patch("bible_study.cli.browse")
         result = runner.invoke(cli, ["view", "--port", "9090"])
         assert result.exit_code == 0
-        mock_serve.assert_called_once_with(port=9090)
+        assert mock_serve.call_args.kwargs["port"] == 9090
+
+    def test_view_passes_data_dir_db_to_server(self, runner, mocker, tmp_path):
+        from pathlib import Path
+
+        from bible_study.cli import cli
+        from bible_study.db import init_db
+        mock_serve = mocker.patch("bible_study.cli.browse")
+        data_dir = tmp_path / "mydata"
+        init_db(data_dir / "bible.db")
+        result = runner.invoke(cli, ["view", "--data-dir", str(data_dir)])
+        assert result.exit_code == 0
+        assert mock_serve.call_args.kwargs["db_path"] == Path(data_dir) / "bible.db"
+        assert "Warning" not in result.output
+
+    def test_view_warns_when_database_missing(self, runner, mocker, tmp_path):
+        from bible_study.cli import cli
+        mocker.patch("bible_study.cli.browse")
+        result = runner.invoke(cli, ["view", "--data-dir", str(tmp_path / "empty")])
+        assert result.exit_code == 0
+        assert "run `init` first" in result.output
 
 
 class TestStatusCommand:

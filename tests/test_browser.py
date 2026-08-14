@@ -1,9 +1,55 @@
 """Tests for bible_study/browser -- lightweight HTTP server."""
 
-import sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from bible_study.db import (
+    init_db,
+    save_book_summary,
+    save_summary,
+    upsert_verses,
+)
+
+
+@pytest.fixture
+def populated_db(tmp_path) -> Path:
+    """A database with one summarised chapter and one text-only chapter."""
+    db_path = tmp_path / "data" / "bible.db"
+    init_db(db_path)
+    upsert_verses(db_path, "Genesis", 1, [(1, "In the beginning God created.")])
+    upsert_verses(db_path, "Genesis", 2, [(1, "Thus the heavens were finished.")])
+    save_summary(db_path, "Genesis", 1, "God creates the heavens and the earth.")
+    save_book_summary(db_path, "Genesis", "GEN", "The book of beginnings.")
+    # Downloaded but never summarised -- a third display state on the index.
+    upsert_verses(db_path, "Exodus", 1, [(1, "Now these are the names.")])
+    return db_path
+
+
+def _handler_for(db_path):
+    """Build a handler bound to *db_path* with response plumbing mocked."""
+    from bible_study.browser import _SQLiteHandler
+    handler = _SQLiteHandler.__new__(_SQLiteHandler)
+    handler.db_path = Path(db_path)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    return handler
+
+
+def _body(handler) -> str:
+    """Decode the last body written by a mocked handler."""
+    return handler.wfile.write.call_args[0][0].decode("utf-8")
+
+
+def _row_for(html: str, book_name: str) -> str:
+    """Return the index-table row whose first cell links to *book_name*."""
+    for row in html.split("<tr>"):
+        if f">{book_name}</a>" in row:
+            return "<tr>" + row.split("</tr>")[0] + "</tr>"
+    raise AssertionError(f"no row for {book_name}")
 
 
 class TestServer:
@@ -74,102 +120,277 @@ class TestServeMock:
                 ms.return_value.serve_forever.side_effect = KeyboardInterrupt
                 serve(port=8083)
 
-    def test_serve_connects_when_db_exists(self, tmp_path, monkeypatch):
+    def test_serve_passes_custom_db_path_to_handler(self, tmp_path):
         from bible_study.browser import serve
-        db = tmp_path / "bible.db"
-        sqlite3.connect(str(db)).close()
-        monkeypatch.chdir(tmp_path)
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        db.rename(data_dir / "bible.db")
+        db = tmp_path / "custom.db"
         with patch("bible_study.browser.webbrowser.open"):
             with patch("bible_study.browser.HTTPServer") as ms:
-                with patch.object(sqlite3, "connect", return_value=MagicMock()) as mc:
-                    serve(port=8084)
-                    mc.assert_called_once()
-                assert ms.called
+                serve(port=8084, db_path=db)
+                factory = ms.call_args[0][1]
+        with patch("bible_study.browser.SimpleHTTPRequestHandler.__init__",
+                   return_value=None):
+            handler = factory()
+        assert handler.db_path == db
 
-    def test_serve_handles_missing_db(self, tmp_path, monkeypatch):
+    def test_serve_defaults_to_data_bible_db(self):
         from bible_study.browser import serve
-        monkeypatch.chdir(tmp_path)
         with patch("bible_study.browser.webbrowser.open"):
             with patch("bible_study.browser.HTTPServer") as ms:
                 serve(port=8085)
-                assert ms.called
+                factory = ms.call_args[0][1]
+        with patch("bible_study.browser.SimpleHTTPRequestHandler.__init__",
+                   return_value=None):
+            handler = factory()
+        assert handler.db_path == Path("data/bible.db")
+
+
+class TestSlugs:
+    """Book-name <-> URL-segment round-tripping."""
+
+    def test_slug_lowercases_and_hyphenates(self):
+        from bible_study.browser import _slug
+        assert _slug("1 Samuel") == "1-samuel"
+        assert _slug("Song of Solomon") == "song-of-solomon"
+
+    def test_book_from_slug_resolves_multiword_names(self):
+        from bible_study.browser import _book_from_slug
+        assert _book_from_slug("song-of-solomon")["name"] == "Song of Solomon"
+        assert _book_from_slug("1-samuel")["name"] == "1 Samuel"
+
+    def test_book_from_slug_accepts_encoded_spaces(self):
+        from bible_study.browser import _book_from_slug
+        assert _book_from_slug("1%20samuel")["name"] == "1 Samuel"
+
+    def test_book_from_slug_returns_none_for_unknown(self):
+        from bible_study.browser import _book_from_slug
+        assert _book_from_slug("notabook") is None
 
 
 class TestHandlerMethods:
-    """Source-level checks of the request handler methods."""
-
-    def test_book_list_produces_html(self):
-        import inspect
-
-        from bible_study.browser import _SQLiteHandler
-        source = inspect.getsource(_SQLiteHandler._book_list)
-        assert "<h1>Bible Study</h1>" in source
-        assert "<a href" in source
-
-    def test_fallback_page_method_exists(self):
-        from bible_study.browser import _SQLiteHandler
-        assert hasattr(_SQLiteHandler, "_fallback_page")
-        assert hasattr(_SQLiteHandler, "_send_error")
+    """Page rendering against a real SQLite database."""
 
     def test_log_message_is_silenced(self):
         from bible_study.browser import _SQLiteHandler
         handler = _SQLiteHandler.__new__(_SQLiteHandler)
         assert handler.log_message("%s", "ignored") is None
 
-    def test_send_error_writes_message(self):
-        from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.send_response = MagicMock()
-        handler.send_header = MagicMock()
-        handler.end_headers = MagicMock()
-        handler.wfile = MagicMock()
+    def test_send_error_writes_message(self, populated_db):
+        handler = _handler_for(populated_db)
         handler._send_error(404, "Book not found: nope")
         handler.send_response.assert_called_once_with(404)
         handler.end_headers.assert_called_once()
-        written = handler.wfile.write.call_args[0][0]
-        assert b"Book not found" in written
+        assert b"Book not found" in handler.wfile.write.call_args[0][0]
 
-    def test_fallback_page_writes_path(self):
-        from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.wfile = MagicMock()
+    def test_fallback_page_returns_404(self, populated_db):
+        handler = _handler_for(populated_db)
         handler._fallback_page("some/route")
-        written = handler.wfile.write.call_args[0][0]
-        assert b"some/route" in written
+        handler.send_response.assert_called_once_with(404)
+        assert b"some/route" in handler.wfile.write.call_args[0][0]
 
-    def test_book_list_writes_all_66_books(self):
-        from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.wfile = MagicMock()
+    def test_book_list_writes_all_66_books(self, populated_db):
+        handler = _handler_for(populated_db)
         handler._book_list()
-        written = handler.wfile.write.call_args[0][0].decode("utf-8")
+        written = _body(handler)
         assert "Genesis" in written
         assert "Revelation" in written
-        assert written.count("<li>") == 66
+        assert written.count("<tr><td>") == 66
 
-    def test_chapter_view_renders_known_book(self):
-        from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.wfile = MagicMock()
-        handler._chapter_view("genesis")
-        written = handler.wfile.write.call_args[0][0].decode("utf-8")
-        assert "Genesis" in written
+    def test_book_list_splits_the_testaments(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._book_list()
+        written = _body(handler)
+        assert "Old Testament" in written
+        assert "New Testament" in written
+        assert written.index("Malachi") < written.index("New Testament")
 
-    def test_chapter_view_sends_404_for_unknown_book(self):
-        from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.wfile = MagicMock()
-        handler._send_error = MagicMock()
-        handler._chapter_view("notabook")
-        handler._send_error.assert_called_once()
-        assert handler._send_error.call_args[0][0] == 404
+    def test_book_list_shows_overall_totals(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._book_list()
+        written = _body(handler)
+        assert "3/1189 chapters downloaded" in written
+        assert "1 summarised" in written
+        assert "1/66 book summaries" in written
+
+    def test_book_list_shows_partial_progress(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._book_list()
+        written = _body(handler)
+        # Genesis: 2 of 50 chapters downloaded, 1 of them summarised.
+        assert "<td>2/50</td><td>1/50</td>" in written
+
+    def test_book_list_checks_off_fully_downloaded_books(self, tmp_path):
+        db_path = tmp_path / "data" / "bible.db"
+        init_db(db_path)
+        for chap in (1, 2, 3, 4):          # Jonah has exactly 4 chapters
+            upsert_verses(db_path, "Jonah", chap, [(1, "text")])
+        handler = _handler_for(db_path)
+        handler._book_list()
+        row = _row_for(_body(handler), "Jonah")
+        assert "&#9989;" in row            # downloaded: checkmark, no fraction
+        assert "0/4" in row                # summarised: none yet
+
+    def test_book_list_checks_off_fully_summarized_books(self, tmp_path):
+        db_path = tmp_path / "data" / "bible.db"
+        init_db(db_path)
+        for chap in (1, 2, 3, 4):
+            upsert_verses(db_path, "Jonah", chap, [(1, "text")])
+            save_summary(db_path, "Jonah", chap, "a summary")
+        handler = _handler_for(db_path)
+        handler._book_list()
+        row = _row_for(_body(handler), "Jonah")
+        assert row.count("&#9989;") == 2   # downloaded and summarised
+        assert "4/4" in row
+
+    def test_book_list_marks_books_with_an_aggregate_summary(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._book_list()
+        written = _body(handler)
+        # Genesis has a book summary; Exodus has verses but no book summary.
+        assert _row_for(written, "Genesis").endswith(
+            "<td><span class='ok'>&#9989;</span></td></tr>",
+        )
+        assert _row_for(written, "Exodus").endswith(
+            "<td><span class='muted'>&mdash;</span></td></tr>",
+        )
+
+    def test_book_list_dashes_undownloaded_books(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._book_list()
+        row = _row_for(_body(handler), "Revelation")
+        assert "&mdash;" in row
+        assert "0/22" in row
+
+    def test_book_list_reports_missing_database(self, tmp_path):
+        handler = _handler_for(tmp_path / "nope.db")
+        handler._book_list()
+        assert "No database found" in _body(handler)
+
+    def test_chapter_list_marks_summarized_chapters(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_list("genesis")
+        written = _body(handler)
+        assert "1 of 50 chapters summarised, 2 of 50 downloaded." in written
+        assert "class='done'" in written
+        assert "The book of beginnings." in written
+
+    def test_chapter_list_links_every_chapter(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_list("genesis")
+        written = _body(handler)
+        assert written.count("/book/genesis/") == 50
+
+    def test_chapter_list_works_without_database(self, tmp_path):
+        handler = _handler_for(tmp_path / "nope.db")
+        handler._chapter_list("genesis")
+        assert "0 of 50 chapters summarised" in _body(handler)
+
+    def test_chapter_list_ticks_a_fully_summarized_book(self, tmp_path):
+        db_path = tmp_path / "data" / "bible.db"
+        init_db(db_path)
+        save_summary(db_path, "Obadiah", 1, "Edom's downfall.")  # 1 chapter
+        handler = _handler_for(db_path)
+        handler._chapter_list("obadiah")
+        assert "&#9989;" in _body(handler)
+
+    def test_chapter_list_404_for_unknown_book(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_list("notabook")
+        handler.send_response.assert_called_once_with(404)
+
+    def test_chapter_view_renders_summary_and_verses(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 1)
+        written = _body(handler)
+        assert "God creates the heavens and the earth." in written
+        assert "In the beginning God created." in written
+
+    def test_chapter_view_notes_missing_summary(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 2)
+        written = _body(handler)
+        assert "No summary yet" in written
+        assert "Thus the heavens were finished." in written
+
+    def test_chapter_view_notes_missing_verses(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 3)
+        assert "No verse text stored" in _body(handler)
+
+    def test_chapter_view_without_database(self, tmp_path):
+        handler = _handler_for(tmp_path / "nope.db")
+        handler._chapter_view("genesis", 1)
+        assert "No verse text stored" in _body(handler)
+
+    def test_chapter_view_has_prev_and_next_links(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 2)
+        written = _body(handler)
+        assert "/book/genesis/1" in written
+        assert "/book/genesis/3" in written
+
+    def test_chapter_view_omits_prev_on_first_chapter(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 1)
+        assert "Chapter 0" not in _body(handler)
+
+    def test_chapter_view_omits_next_on_last_chapter(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 50)
+        assert "Chapter 51" not in _body(handler)
+
+    def test_chapter_view_404_for_out_of_range_chapter(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("genesis", 99)
+        handler.send_response.assert_called_once_with(404)
+        assert b"no chapter 99" in handler.wfile.write.call_args[0][0]
+
+    def test_chapter_view_404_for_unknown_book(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._chapter_view("notabook", 1)
+        handler.send_response.assert_called_once_with(404)
+
+    def test_html_in_stored_text_is_escaped(self, tmp_path):
+        db_path = tmp_path / "data" / "bible.db"
+        init_db(db_path)
+        upsert_verses(db_path, "Genesis", 1, [(1, "<script>alert(1)</script>")])
+        handler = _handler_for(db_path)
+        handler._chapter_view("genesis", 1)
+        written = _body(handler)
+        assert "<script>alert(1)</script>" not in written
+        assert "&lt;script&gt;" in written
+
+
+class TestResponseHeaders:
+    """Every response must carry a status line and headers."""
+
+    def test_send_html_sets_status_and_headers(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._send_html("<h1>hi</h1>")
+        handler.send_response.assert_called_once_with(200)
+        headers = dict(c[0] for c in handler.send_header.call_args_list)
+        assert headers["Content-Type"] == "text/html; charset=utf-8"
+        assert headers["Content-Length"] == str(len(b"<h1>hi</h1>"))
+        handler.end_headers.assert_called_once()
+
+    def test_send_html_accepts_custom_status(self, populated_db):
+        handler = _handler_for(populated_db)
+        handler._send_html("<h1>gone</h1>", code=410)
+        handler.send_response.assert_called_once_with(410)
+
+    @pytest.mark.parametrize(
+        "method, args",
+        [("_book_list", ()), ("_chapter_list", ("genesis",)),
+         ("_chapter_view", ("genesis", 1))],
+    )
+    def test_every_page_sends_a_status_line(self, method, args, populated_db):
+        handler = _handler_for(populated_db)
+        getattr(handler, method)(*args)
+        handler.send_response.assert_called_once_with(200)
+        handler.end_headers.assert_called_once()
 
 
 class TestDoGetRouting:
-    """Exercise do_GET routing across all three branches."""
+    """Exercise do_GET routing across all branches."""
 
     def _handler(self, path):
         from bible_study.browser import _SQLiteHandler
@@ -177,8 +398,10 @@ class TestDoGetRouting:
         handler.path = path
         handler.wfile = MagicMock()
         handler._book_list = MagicMock()
+        handler._chapter_list = MagicMock()
         handler._chapter_view = MagicMock()
         handler._fallback_page = MagicMock()
+        handler._send_error = MagicMock()
         return handler
 
     def test_root_path_shows_book_list(self):
@@ -186,10 +409,31 @@ class TestDoGetRouting:
         handler.do_GET()
         handler._book_list.assert_called_once()
 
-    def test_book_path_shows_chapter_view(self):
+    def test_book_path_shows_chapter_list(self):
         handler = self._handler("/book/genesis")
         handler.do_GET()
-        handler._chapter_view.assert_called_once_with("genesis")
+        handler._chapter_list.assert_called_once_with("genesis")
+
+    def test_chapter_path_shows_chapter_view(self):
+        handler = self._handler("/book/genesis/3")
+        handler.do_GET()
+        handler._chapter_view.assert_called_once_with("genesis", 3)
+
+    def test_trailing_slash_still_lists_chapters(self):
+        handler = self._handler("/book/genesis/")
+        handler.do_GET()
+        handler._chapter_list.assert_called_once_with("genesis")
+
+    def test_non_numeric_chapter_is_rejected(self):
+        handler = self._handler("/book/genesis/three")
+        handler.do_GET()
+        handler._send_error.assert_called_once()
+        assert handler._send_error.call_args[0][0] == 404
+
+    def test_too_many_segments_are_rejected(self):
+        handler = self._handler("/book/genesis/1/2")
+        handler.do_GET()
+        handler._send_error.assert_called_once()
 
     def test_unknown_path_shows_fallback(self):
         handler = self._handler("/something-else")
@@ -199,24 +443,67 @@ class TestDoGetRouting:
     def test_query_string_is_stripped(self):
         handler = self._handler("/book/genesis?chapter=2")
         handler.do_GET()
-        handler._chapter_view.assert_called_once_with("genesis")
+        handler._chapter_list.assert_called_once_with("genesis")
 
 
-class TestHandlerInitialization:
-    """Verify the conn attribute round-trips."""
+class TestOverTheWire:
+    """Drive a real HTTPServer on a loopback socket."""
 
-    def test_handler_with_none_conn(self):
+    @pytest.fixture
+    def server_port(self, populated_db):
+        import threading
+        from http.server import HTTPServer
+
         from bible_study.browser import _SQLiteHandler
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.conn = None
-        assert handler.conn is None
 
-    def test_handler_with_mock_conn(self):
-        from bible_study.browser import _SQLiteHandler
-        mock_conn = MagicMock()
-        handler = _SQLiteHandler.__new__(_SQLiteHandler)
-        handler.conn = mock_conn
-        assert handler.conn is mock_conn
+        def handler(*args, **kwargs):
+            return _SQLiteHandler(*args, db_path=populated_db, **kwargs)
+
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server.server_address[1]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def _get(self, port, path):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            return resp.status, resp.getheader("Content-Type"), resp.read()
+        finally:
+            conn.close()
+
+    def test_root_returns_parseable_http_response(self, server_port):
+        status, ctype, body = self._get(server_port, "/")
+        assert status == 200
+        assert ctype == "text/html; charset=utf-8"
+        assert b"Genesis" in body
+
+    def test_book_route_lists_chapters(self, server_port):
+        status, _ctype, body = self._get(server_port, "/book/genesis")
+        assert status == 200
+        assert b"/book/genesis/50" in body
+
+    def test_chapter_route_serves_summary_and_verses(self, server_port):
+        status, _ctype, body = self._get(server_port, "/book/genesis/1")
+        assert status == 200
+        assert b"God creates the heavens and the earth." in body
+        assert b"In the beginning God created." in body
+
+    def test_unknown_book_returns_404(self, server_port):
+        status, _ctype, body = self._get(server_port, "/book/notabook")
+        assert status == 404
+        assert b"Book not found" in body
+
+    def test_unknown_route_returns_404(self, server_port):
+        status, _ctype, _body = self._get(server_port, "/nope")
+        assert status == 404
 
 
 class TestIntegration:

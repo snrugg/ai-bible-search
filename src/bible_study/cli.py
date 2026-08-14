@@ -117,7 +117,12 @@ def summarize_book_cmd(data_dir: Path | None) -> None:
 @click.option("--port", "-p", type=int, default=8080, help="Port for the viewer.")
 def view(data_dir: Path | None, port: int) -> None:
     """Launch a lightweight browser to view verses and summaries."""
-    browse(port=port)
+    data_dir = Path(data_dir) if data_dir else Path("data")
+    db_path = data_dir / "bible.db"
+    if not db_path.exists():
+        click.echo(f"Warning: no database at {db_path} -- run `init` first.")
+    click.echo(f"Serving {db_path} at http://localhost:{port}")
+    browse(port=port, db_path=db_path)
 
 
 @cli.command()

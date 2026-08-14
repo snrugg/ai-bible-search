@@ -280,32 +280,39 @@ class TestFinalBranches:
         assert generate("prompt", max_retries=0) == ""
         mock_post.assert_not_called()
 
-    def test_handler_factory_passes_conn_through(self, mocker):
+    def test_handler_factory_passes_db_path_through(self, mocker, tmp_path):
         import bible_study.browser as browser
         captured = {}
 
         class FakeHandler:
-            def __init__(self, *args, conn=None, **kwargs):
-                captured["conn"] = conn
+            def __init__(self, *args, db_path=None, **kwargs):
+                captured["db_path"] = db_path
                 captured["args"] = args
 
         mocker.patch.object(browser, "_SQLiteHandler", FakeHandler)
         mocker.patch.object(browser.webbrowser, "open")
-        sentinel = object()
-        mocker.patch.object(browser.sqlite3, "connect", return_value=sentinel)
-        mocker.patch.object(browser.Path, "exists", lambda self: True)
         server = mocker.patch.object(browser, "HTTPServer")
-        browser.serve(port=8099)
+        db = tmp_path / "bible.db"
+        browser.serve(port=8099, db_path=db)
         factory = server.call_args[0][1]
         factory("req", ("127.0.0.1", 1234), None)
-        assert captured["conn"] is sentinel
+        assert captured["db_path"] == db
         assert captured["args"][0] == "req"
 
-    def test_handler_init_stores_conn(self, mocker):
+    def test_handler_init_stores_db_path(self, mocker, tmp_path):
         from bible_study.browser import _SQLiteHandler
         mocker.patch(
             "http.server.SimpleHTTPRequestHandler.__init__", return_value=None,
         )
-        sentinel = object()
-        handler = _SQLiteHandler(conn=sentinel)
-        assert handler.conn is sentinel
+        db = tmp_path / "bible.db"
+        handler = _SQLiteHandler(db_path=db)
+        assert handler.db_path == db
+
+    def test_handler_init_defaults_db_path(self, mocker):
+        from pathlib import Path as _P
+
+        from bible_study.browser import _SQLiteHandler
+        mocker.patch(
+            "http.server.SimpleHTTPRequestHandler.__init__", return_value=None,
+        )
+        assert _SQLiteHandler().db_path == _P("data/bible.db")
