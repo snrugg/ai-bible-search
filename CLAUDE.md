@@ -11,6 +11,7 @@ An indexed, summarized version of the entire KJV Bible (66 books, ~1,189 chapter
 - `src/bible_study/` — All production code
 - `tests/` — Unit tests (all mocked); `tests/integration/` — live I/O (skipped)
 - `config.yaml` — User-editable prompt templates, model names, and chunking settings
+- `.githooks/` — Tracked git hooks; enable with `git config core.hooksPath .githooks`
 - `data/` — SQLite database created at runtime; git-ignored, since the vector index pushes it past 80 MB
 
 ## Coding Standards
@@ -78,6 +79,32 @@ uv run mutmut run                              # Mutation testing (src/bible_stu
 ```
 
 `addopts` in `pyproject.toml` already passes `--cov=bible_study`, so a bare `uv run pytest` produces a coverage report and fails under 90%. 569 tests pass; 9 are skipped by design (7 in `tests/integration/`, 2 over-the-wire browser tests). Target: 100% test coverage with 90% mutation passing rate. No linter or formatter is configured — the `# noqa` comments in the source are vestigial.
+
+## Git Hooks
+
+Hooks live in the tracked `.githooks/` directory, not in `.git/hooks/`, so they are versioned with the repo. They are active only when `core.hooksPath` points at them:
+
+```bash
+git config core.hooksPath .githooks     # once per clone
+```
+
+`pre-commit` does four things, cheapest first:
+
+1. **Refuses generated data** — `data/bible.db`, `data/api-cache/`, `*PROGRESS.md`, `output/`, `htmlcov/`, any `*.db`. These are in `data/.gitignore`, but gitignore does not apply to a file staged with `git add -f`, which is exactly how they get committed by accident.
+2. **Refuses any blob over 5 MB** — a backstop for whatever the name patterns above do not anticipate.
+3. **Byte-compiles staged Python** — catches the indentation corruption called out under Coding Standards before the slower test run.
+4. **Runs the full suite**, including the 90% coverage floor. About 19 seconds.
+
+Escape hatches, for when you mean it:
+
+```bash
+SKIP_TESTS=1 git commit -m "wip"   # skip only step 4
+git commit --no-verify             # skip the hook entirely
+```
+
+The test run checks the **working tree, not the staged snapshot**. Stashing unstaged changes to test the index exactly is more likely to lose work than to catch a bug, so it deliberately does not. Failing test output goes to `/tmp/bible-study-precommit.log`.
+
+There is no `pre-push` hook: the repo has no remote, so it would never fire.
 
 ## Ollama Context Window
 
@@ -217,7 +244,7 @@ Set `ollama_num_ctx` in `config.yaml`. `prompts.get_num_ctx()` resolves it (igno
 | `ollama.py` | Local Ollama API client: health_check, check_model_available, generate, embed, plus the context-window guard (check_prompt_fits, PromptTooLongError) |
 | `prompts.py` | YAML config loader + prompt builders (chapter_summary, book_summary, ask) |
 | `summary.py` | Pipeline orchestration: summarize_chapter, summarize_book, export_markdowns |
-| `browser.py` | SQLite-backed HTTP server with _SQLiteHandler class and serve() entry point |
+| `browser.py` | SQLite-backed HTTP server with _SQLiteHandler class and serve() entry point. Uses `ThreadingHTTPServer` so a slow `/ask` does not block every other request |
 | `vectors.py` | sqlite-vec layer: extension loading, vec0 tables, chunking, embed_all, KNN search |
 | `rag.py` | Grounded question answering: retrieve, expand, rank, budget, one generate() call |
 

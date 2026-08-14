@@ -1,0 +1,111 @@
+#!/bin/sh
+#
+# Pre-commit checks for bible-study.
+#
+# Enable with:  git config core.hooksPath .githooks
+# Bypass once:  git commit --no-verify
+# Skip tests:   SKIP_TESTS=1 git commit
+#
+# Note: the test run checks the WORKING TREE, not the staged snapshot.
+# Stashing unstaged changes to test the index exactly is more likely to
+# lose work than to catch a bug, so this deliberately does not do it.
+
+set -eu
+
+RED=''
+YELLOW=''
+RESET=''
+if [ -t 1 ]; then
+    RED=$(printf '\033[31m')
+    YELLOW=$(printf '\033[33m')
+    RESET=$(printf '\033[0m')
+fi
+
+fail() {
+    printf '%spre-commit: %s%s\n' "$RED" "$1" "$RESET" >&2
+    exit 1
+}
+
+warn() {
+    printf '%spre-commit: %s%s\n' "$YELLOW" "$1" "$RESET" >&2
+}
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -n "$staged" ] || exit 0
+
+# -- 1. Generated data must never be committed ---------------------------- #
+#
+# data/bible.db is ~81 MB once the vector index is built, and binary blobs
+# do not delta-compress -- every re-index would add tens of MB to history
+# permanently.  These paths are in data/.gitignore, but gitignore does not
+# apply to a file added with `git add -f`, which is exactly how this gets
+# committed by accident.
+for file in $staged; do
+    case "$file" in
+        data/bible.db|*.db|*.db-wal|*.db-shm)
+            fail "refusing to commit the generated database: $file
+  It is rebuilt by \`bible-study init\` / \`embed\` and reaches ~81 MB.
+  Unstage it with: git restore --staged $file" ;;
+        data/api-cache/*)
+            fail "refusing to commit the API cache: $file
+  It is rebuilt by \`bible-study init\`.
+  Unstage it with: git restore --staged 'data/api-cache/*'" ;;
+        data/*PROGRESS.md|output/*|htmlcov/*|.coverage)
+            fail "refusing to commit generated output: $file
+  Unstage it with: git restore --staged $file" ;;
+    esac
+done
+
+# -- 2. No large blobs ----------------------------------------------------- #
+#
+# Backstop for anything the name patterns above do not anticipate.
+limit=5242880   # 5 MB
+for file in $staged; do
+    blob=$(git rev-parse ":$file" 2>/dev/null) || continue
+    size=$(git cat-file -s "$blob" 2>/dev/null) || continue
+    if [ "$size" -gt "$limit" ]; then
+        mb=$((size / 1048576))
+        fail "refusing to commit a ${mb} MB file: $file
+  Large binaries bloat history permanently and cannot be delta-compressed.
+  Commit it deliberately with --no-verify if that is really what you want."
+    fi
+done
+
+# -- 3. Staged Python must at least compile -------------------------------- #
+#
+# CLAUDE.md calls out indentation corruption as a recurring failure mode, so
+# this catches a syntactically broken file before the slower test run.
+py_staged=$(printf '%s\n' "$staged" | grep '\.py$' || true)
+if [ -n "$py_staged" ]; then
+    for file in $py_staged; do
+        [ -f "$file" ] || continue
+        err=$(python3 -c \
+            "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')" \
+            "$file" 2>&1) || fail "$file does not compile
+$(printf '%s' "$err" | tail -3)"
+    done
+fi
+
+# -- 4. Test suite ---------------------------------------------------------- #
+#
+# pyproject's addopts already turn on coverage with fail_under = 90, so this
+# enforces the coverage floor too.  Roughly 19 seconds.
+if [ "${SKIP_TESTS:-0}" = "1" ]; then
+    warn "SKIP_TESTS=1 -- skipping the test suite"
+    exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    warn "uv not found -- skipping the test suite"
+    exit 0
+fi
+
+printf 'pre-commit: running tests ...\n' >&2
+if ! uv run pytest -q >/tmp/bible-study-precommit.log 2>&1; then
+    tail -25 /tmp/bible-study-precommit.log >&2
+    fail "tests failed (full output in /tmp/bible-study-precommit.log)
+  Commit anyway with: git commit --no-verify"
+fi
+
+tail -1 /tmp/bible-study-precommit.log >&2
+exit 0
