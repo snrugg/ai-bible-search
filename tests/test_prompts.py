@@ -195,3 +195,105 @@ class TestReplacementEscaping:
         from bible_study.prompts import render
         out = render("t", {"t": "{q} and {q}"}, q="x")
         assert out == "x and x"
+
+
+class TestEmbedConfig:
+    """embed_model / embed_dims resolution, mirroring the num_ctx chain."""
+
+    def test_get_embed_model_reads_config(self):
+        from bible_study.prompts import get_embed_model
+        assert get_embed_model({"embed_model": "custom:tag"}) == "custom:tag"
+
+    def test_get_embed_model_falls_back(self):
+        from bible_study.ollama import EMBED_MODEL
+        from bible_study.prompts import get_embed_model
+        assert get_embed_model({}) == EMBED_MODEL
+
+    def test_get_embed_model_ignores_blank(self):
+        from bible_study.ollama import EMBED_MODEL
+        from bible_study.prompts import get_embed_model
+        assert get_embed_model({"embed_model": "   "}) == EMBED_MODEL
+
+    def test_get_embed_dims_reads_config(self):
+        from bible_study.prompts import get_embed_dims
+        assert get_embed_dims({"embed_dims": "768"}) == 768
+
+    def test_get_embed_dims_ignores_non_numeric(self):
+        from bible_study.ollama import EMBED_DIMS
+        from bible_study.prompts import get_embed_dims
+        assert get_embed_dims({"embed_dims": "wide"}) == EMBED_DIMS
+
+    def test_get_embed_dims_ignores_non_positive(self):
+        from bible_study.ollama import EMBED_DIMS
+        from bible_study.prompts import get_embed_dims
+        assert get_embed_dims({"embed_dims": "0"}) == EMBED_DIMS
+        assert get_embed_dims({"embed_dims": "-8"}) == EMBED_DIMS
+
+    def test_get_embed_dims_loads_config_when_omitted(self, tmp_path, monkeypatch):
+        from bible_study.prompts import get_embed_dims
+        (tmp_path / "config.yaml").write_text("embed_dims: 512\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        assert get_embed_dims() == 512
+
+    def test_get_embed_model_falls_back_without_config_file(
+        self, tmp_path, monkeypatch,
+    ):
+        from bible_study import prompts
+        from bible_study.ollama import EMBED_MODEL
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BIBLE_STUDY_CONFIG", raising=False)
+        monkeypatch.setattr(
+            prompts, "load_config",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
+        )
+        assert prompts.get_embed_model() == EMBED_MODEL
+
+    def test_get_chunk_window_reads_config(self):
+        from bible_study.prompts import get_chunk_window
+        assert get_chunk_window({"chunk_window": "7"}) == 7
+
+    def test_get_chunk_window_falls_back(self):
+        from bible_study.prompts import get_chunk_window
+        from bible_study.vectors import CHUNK_WINDOW
+        assert get_chunk_window({}) == CHUNK_WINDOW
+
+    def test_get_chunk_stride_reads_config(self):
+        from bible_study.prompts import get_chunk_stride
+        assert get_chunk_stride({"chunk_stride": "5"}) == 5
+
+    def test_get_chunk_stride_falls_back(self):
+        from bible_study.prompts import get_chunk_stride
+        from bible_study.vectors import CHUNK_STRIDE
+        assert get_chunk_stride({"chunk_stride": "nope"}) == CHUNK_STRIDE
+
+
+class TestAskTemplate:
+
+    def test_uses_the_config_template(self):
+        from bible_study.prompts import build_ask_prompt
+        config = {"ask": "Q: {question}\nS: {context}"}
+        assert build_ask_prompt(config, "why?", "sources") == "Q: why?\nS: sources"
+
+    def test_falls_back_to_inline(self):
+        from bible_study.prompts import build_ask_prompt
+        out = build_ask_prompt({}, "why did Abraham leave Ur?", "Genesis 11")
+        assert "why did Abraham leave Ur?" in out
+        assert "Genesis 11" in out
+
+    def test_inline_template_instructs_grounding(self):
+        from bible_study.prompts import build_inline_ask_prompt
+        out = build_inline_ask_prompt("q", "c")
+        assert "ONLY the sources" in out
+        assert "Cite the reference" in out
+
+    def test_question_with_backslashes_survives(self):
+        from bible_study.prompts import build_ask_prompt
+        out = build_ask_prompt({}, r"what is \1 and \g<0>?", "ctx")
+        assert r"what is \1 and \g<0>?" in out
+
+    def test_context_with_backslashes_survives(self):
+        from bible_study.prompts import build_ask_prompt
+        config = {"ask": "Q: {question}\nS: {context}"}
+        out = build_ask_prompt(config, "q", r"verse \1 text")
+        assert r"verse \1 text" in out

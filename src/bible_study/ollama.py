@@ -31,6 +31,30 @@ RESPONSE_RESERVE_TOKENS = 2048
 #: that are wildly too big.
 CHARS_PER_TOKEN = 4
 
+#: Model used to embed chunks and questions for vector search.  Must be an
+#: embedding model, not a chat model.
+EMBED_MODEL = 'qwen3-embedding:0.6b'
+
+#: Vector width emitted by :data:`EMBED_MODEL`.  Baked into the vec0
+#: virtual tables when they are created and not alterable afterwards.
+EMBED_DIMS = 1024
+
+#: Inputs sent per /api/embed request.
+EMBED_BATCH = 32
+
+#: Embedding gets its own, longer timeout: the first request loads a second
+#: model into VRAM, which can take far longer than a warm generate call.
+EMBED_TIMEOUT = 120
+
+#: Qwen3-Embedding is *asymmetric*.  Queries are wrapped in a one-line
+#: instruction; documents are embedded raw.  Both sides must stay encoded
+#: this way -- wrapping documents too, or leaving queries bare, silently
+#: costs retrieval accuracy and is invisible in the output.
+QUERY_INSTRUCTION = (
+    'Given a question about the Bible, retrieve the passages and study '
+    'summaries that answer it'
+)
+
 
 class PromptTooLongError(RuntimeError):
     """Raised when a prompt cannot fit in the requested context window.
@@ -139,3 +163,70 @@ def generate(
                 f'Ollama generation failed after {max_retries} retries: {exc}',
                ) from exc
     return ''
+
+
+def format_query(text: str, instruction: str = QUERY_INSTRUCTION) -> str:
+    """Wrap *text* in the Qwen3-Embedding query-instruction prefix."""
+    return f'Instruct: {instruction}\nQuery: {text}'
+
+
+def embed(
+    texts: str | list[str],
+    base_url: str = OLLAMA_BASE,
+    model: str = EMBED_MODEL,
+    timeout: int = EMBED_TIMEOUT,
+    max_retries: int = MAX_RETRIES,
+    is_query: bool = False,
+    instruction: str = QUERY_INSTRUCTION,
+) -> list[list[float]]:
+    """Embed one or more strings, returning one vector per input.
+
+    Always returns a list of vectors -- a bare string yields a one-element
+    list -- so callers never have to branch on the input type.
+
+    Set *is_query* for search queries only; see :data:`QUERY_INSTRUCTION`.
+
+    Uses ``/api/embed``, which takes a batch under ``input`` and returns
+    ``{"embeddings": [[...], ...]}``.  The legacy ``/api/embeddings``
+    endpoint takes a single ``prompt`` and returns ``{"embedding": [...]}``
+    -- do not mix the two.
+
+    Raises
+    ------
+    RuntimeError
+        If the request keeps failing, or if Ollama returns a different
+        number of vectors than there were inputs.
+    """
+    items = [texts] if isinstance(texts, str) else list(texts)
+    if not items:
+        return []
+    if is_query:
+        items = [format_query(t, instruction) for t in items]
+
+    payload = {'model': model, 'input': items}
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(
+                f'{base_url}/api/embed',
+                json=payload,
+                timeout=timeout,
+               )
+            resp.raise_for_status()
+            vectors = resp.json().get('embeddings', [])
+            if len(vectors) != len(items):
+                msg = (
+                    f'Ollama returned {len(vectors)} embeddings for '
+                    f'{len(items)} inputs -- refusing to misalign vectors '
+                    f'with their chunks'
+                )
+                raise RuntimeError(msg)
+            return [[float(x) for x in vec] for vec in vectors]
+        except Exception as exc:
+            if attempt < max_retries:
+                time.sleep(RETRY_DELAY * (2 ** (attempt - 1)))
+                continue
+            raise RuntimeError(
+                f'Ollama embedding failed after {max_retries} retries: {exc}',
+               ) from exc
+    return []

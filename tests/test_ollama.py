@@ -116,3 +116,119 @@ class TestContextWindow:
     def test_prompt_too_long_is_a_runtime_error(self):
         from bible_study.ollama import PromptTooLongError
         assert issubclass(PromptTooLongError, RuntimeError)
+
+
+class TestEmbed:
+    """ollama.embed() -- batched /api/embed calls."""
+
+    def _resp(self, mocker, payload):
+        return mocker.MagicMock(json=lambda: payload, raise_for_status=lambda: None)
+
+    def test_returns_one_vector_per_input(self, mocker):
+        from bible_study.ollama import embed
+        mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0, 2.0], [3.0, 4.0]]}))
+        assert embed(["a", "b"]) == [[1.0, 2.0], [3.0, 4.0]]
+
+    def test_accepts_a_bare_string(self, mocker):
+        from bible_study.ollama import embed
+        mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0, 2.0]]}))
+        assert embed("a") == [[1.0, 2.0]]
+
+    def test_empty_input_makes_no_request(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post")
+        assert embed([]) == []
+        mock_post.assert_not_called()
+
+    def test_posts_to_the_embed_endpoint(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0]]}))
+        embed(["a"])
+        assert mock_post.call_args[0][0].endswith("/api/embed")
+
+    def test_sends_input_not_prompt(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0], [2.0]]}))
+        embed(["a", "b"])
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["input"] == ["a", "b"]
+        assert "prompt" not in payload
+
+    def test_uses_the_given_model(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0]]}))
+        embed(["a"], model="custom:tag")
+        assert mock_post.call_args.kwargs["json"]["model"] == "custom:tag"
+
+    def test_coerces_values_to_float(self, mocker):
+        from bible_study.ollama import embed
+        mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1, 2]]}))
+        assert embed(["a"]) == [[1.0, 2.0]]
+
+    def test_retries_then_succeeds(self, mocker):
+        from bible_study.ollama import embed
+        mocker.patch("bible_study.ollama.time.sleep")
+        mocker.patch("requests.post", side_effect=[
+            Exception("boom"),
+            self._resp(mocker, {"embeddings": [[1.0]]}),
+        ])
+        assert embed(["a"]) == [[1.0]]
+
+    def test_raises_after_retries_exhausted(self, mocker):
+        import pytest
+        from bible_study.ollama import embed
+        mocker.patch("bible_study.ollama.time.sleep")
+        mocker.patch("requests.post", side_effect=Exception("down"))
+        with pytest.raises(RuntimeError, match="embedding failed after 3 retries"):
+            embed(["a"])
+
+    def test_rejects_a_misaligned_response(self, mocker):
+        import pytest
+        from bible_study.ollama import embed
+        mocker.patch("bible_study.ollama.time.sleep")
+        mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0]]}))
+        with pytest.raises(RuntimeError, match="refusing to misalign"):
+            embed(["a", "b"])
+
+
+class TestQueryInstruction:
+    """Qwen3-Embedding encodes queries and documents differently."""
+
+    def _resp(self, mocker, payload):
+        return mocker.MagicMock(json=lambda: payload, raise_for_status=lambda: None)
+
+    def test_format_query_wraps_with_instruct_prefix(self):
+        from bible_study.ollama import format_query
+        out = format_query("what is grace?")
+        assert out.startswith("Instruct: ")
+        assert "\nQuery: what is grace?" in out
+
+    def test_format_query_accepts_a_custom_instruction(self):
+        from bible_study.ollama import format_query
+        assert format_query("q", instruction="Custom task").startswith(
+            "Instruct: Custom task",
+        )
+
+    def test_queries_are_wrapped(self, mocker):
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0]]}))
+        embed(["what is grace?"], is_query=True)
+        assert mock_post.call_args.kwargs["json"]["input"][0].startswith(
+            "Instruct: ",
+        )
+
+    def test_documents_are_left_raw(self, mocker):
+        """Wrapping documents too would silently degrade retrieval."""
+        from bible_study.ollama import embed
+        mock_post = mocker.patch("requests.post", return_value=self._resp(
+            mocker, {"embeddings": [[1.0]]}))
+        embed(["In the beginning"])
+        assert mock_post.call_args.kwargs["json"]["input"] == ["In the beginning"]

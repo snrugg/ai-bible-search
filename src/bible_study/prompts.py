@@ -11,6 +11,10 @@ import yaml
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 MODEL_KEY = "ollama_model"
 NUM_CTX_KEY = "ollama_num_ctx"
+EMBED_MODEL_KEY = "embed_model"
+EMBED_DIMS_KEY = "embed_dims"
+CHUNK_WINDOW_KEY = "chunk_window"
+CHUNK_STRIDE_KEY = "chunk_stride"
 
 
 def load_config(path: str | None = None) -> dict[str, str]:
@@ -95,6 +99,73 @@ def get_num_ctx(config: dict[str, str] | None = None) -> int:
     except ValueError:
         return _ol.NUM_CTX
     return value if value > 0 else _ol.NUM_CTX
+
+
+def _config_or_load(config: dict[str, str] | None) -> dict[str, str]:
+    """Return *config*, loading it from disk when omitted."""
+    if config is not None:
+        return config
+    try:
+        return load_config()
+    except FileNotFoundError:
+        return {}
+
+
+def _positive_int(config: dict[str, str], key: str, fallback: int) -> int:
+    """Read a positive integer from *config*, else *fallback*.
+
+    ``_load_file`` stringifies every YAML value, so ``embed_dims: 1024``
+    arrives as ``"1024"`` and has to be parsed back.
+    """
+    raw = config.get(key, "")
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return fallback
+    return value if value > 0 else fallback
+
+
+def get_embed_model(config: dict[str, str] | None = None) -> str:
+    """Return the embedding model configured in ``config.yaml``.
+
+    Falls back to :data:`bible_study.ollama.EMBED_MODEL` when the key is
+    absent or blank.
+    """
+    import bible_study.ollama as _ol
+
+    config = _config_or_load(config)
+    return config.get(EMBED_MODEL_KEY, "").strip() or _ol.EMBED_MODEL
+
+
+def get_embed_dims(config: dict[str, str] | None = None) -> int:
+    """Return the embedding width configured in ``config.yaml``.
+
+    Falls back to :data:`bible_study.ollama.EMBED_DIMS` when the key is
+    absent, blank, non-numeric, or not positive.
+    """
+    import bible_study.ollama as _ol
+
+    return _positive_int(
+        _config_or_load(config), EMBED_DIMS_KEY, _ol.EMBED_DIMS,
+    )
+
+
+def get_chunk_window(config: dict[str, str] | None = None) -> int:
+    """Return the verse-window size configured in ``config.yaml``."""
+    import bible_study.vectors as _vec
+
+    return _positive_int(
+        _config_or_load(config), CHUNK_WINDOW_KEY, _vec.CHUNK_WINDOW,
+    )
+
+
+def get_chunk_stride(config: dict[str, str] | None = None) -> int:
+    """Return the verse-window stride configured in ``config.yaml``."""
+    import bible_study.vectors as _vec
+
+    return _positive_int(
+        _config_or_load(config), CHUNK_STRIDE_KEY, _vec.CHUNK_STRIDE,
+    )
 
 
 def render(template_name: str, config: dict[str, str], **kwargs: Any) -> str:
@@ -269,3 +340,56 @@ def build_inline_book_prompt(
 ) -> str:
     """Build a book-level prompt without needing any config file."""
     return _inline_book_prompt(book_name, chapter_count, chapter_summaries)
+
+
+# -- Grounded question answering ------------------------------------------ #
+
+_inline_ask_template = (
+    "You are a conservative Christian Bible scholar. Answer the question\n"
+    "below using ONLY the sources provided.\n"
+    "\n"
+    "Guidelines:\n"
+    "- Cite the reference (e.g. Genesis 1:1-5) for every claim you make.\n"
+    "- Prefer the King James Version text over the summaries where they\n"
+    "  overlap; the summaries are study notes, not scripture.\n"
+    "- If the sources do not answer the question, say so plainly rather\n"
+    "  than filling the gap from memory.\n"
+    "- Keep the tone neutral and informative -- like a study guide entry.\n"
+    "\n"
+    "Question:\n"
+    "{question}\n"
+    "\n"
+    "Sources:\n"
+    "{context}\n"
+    "\n"
+    "Provide your answer below."
+)
+
+
+def _inline_ask_prompt(question: str, context: str) -> str:
+    """Inline fallback for grounded question answering."""
+    return _render_template(
+        _inline_ask_template,
+        question=question,
+        context=context,
+    )
+
+
+def build_ask_prompt(
+    config: dict[str, str],
+    question: str,
+    context: str,
+) -> str:
+    """Build a grounded question-answering prompt.
+
+    *context* is the assembled, already-budgeted source text.  Falls back
+    to an inline template when the config has no ``ask`` key.
+    """
+    if "ask" in config:
+        return render("ask", config, question=question, context=context)
+    return _inline_ask_prompt(question, context)
+
+
+def build_inline_ask_prompt(question: str, context: str) -> str:
+    """Build an ask prompt without needing any config file."""
+    return _inline_ask_prompt(question, context)

@@ -177,3 +177,196 @@ class TestClearSummaries:
         from bible_study.db import clear_book_summaries, clear_chapter_summaries
         assert clear_chapter_summaries(db_path) == 0
         assert clear_book_summaries(db_path, "Genesis") == 0
+
+
+class TestChunkSchema:
+    """The chunks and vec_meta tables ship in INIT_SQL, extension-free."""
+
+    def test_init_db_creates_chunks_table(self, db_path):
+        import sqlite3
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'",
+            ).fetchone()
+        assert row is not None
+
+    def test_init_db_creates_vec_meta_table(self, db_path):
+        import sqlite3
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_meta'",
+            ).fetchone()
+        assert row is not None
+
+    def test_init_db_is_idempotent_for_chunks(self, db_path):
+        from bible_study.db import upsert_chunk
+        upsert_chunk(db_path, "book", "Genesis", 0, 0, 0, "Genesis", "t", "h")
+        init_db(db_path)
+        from bible_study.db import chunk_counts
+        assert chunk_counts(db_path)["book"] == (1, 0)
+
+
+class TestChunkUpsert:
+
+    def test_upsert_returns_an_id(self, db_path):
+        from bible_study.db import upsert_chunk
+        cid = upsert_chunk(
+            db_path, "verse", "Genesis", 1, 1, 5, "Genesis 1:1-5", "text", "h1",
+        )
+        assert isinstance(cid, int)
+
+    def test_upsert_keeps_the_id_stable_on_update(self, db_path):
+        """INSERT OR REPLACE would allocate a new rowid and orphan the vector."""
+        from bible_study.db import get_chunks_by_ids, upsert_chunk
+        first = upsert_chunk(
+            db_path, "verse", "Genesis", 1, 1, 5, "Genesis 1:1-5", "old", "h1",
+        )
+        second = upsert_chunk(
+            db_path, "verse", "Genesis", 1, 1, 5, "Genesis 1:1-5", "new", "h2",
+        )
+        assert second == first
+        assert get_chunks_by_ids(db_path, [first])[first]["text"] == "new"
+
+    def test_book_tier_chunk_is_unique(self, db_path):
+        """Sentinel 0 columns, not NULL -- NULLs are distinct in a UNIQUE index."""
+        from bible_study.db import chunk_counts, upsert_chunk
+        upsert_chunk(db_path, "book", "Genesis", 0, 0, 0, "Genesis", "a", "h1")
+        upsert_chunk(db_path, "book", "Genesis", 0, 0, 0, "Genesis", "b", "h2")
+        assert chunk_counts(db_path)["book"] == (1, 0)
+
+    def test_chapter_tier_chunk_is_unique(self, db_path):
+        from bible_study.db import chunk_counts, upsert_chunk
+        upsert_chunk(db_path, "chapter", "Genesis", 1, 0, 0, "Genesis 1", "a", "h1")
+        upsert_chunk(db_path, "chapter", "Genesis", 1, 0, 0, "Genesis 1", "b", "h2")
+        assert chunk_counts(db_path)["chapter"] == (1, 0)
+
+    def test_different_tiers_do_not_collide(self, db_path):
+        from bible_study.db import chunk_counts, upsert_chunk
+        upsert_chunk(db_path, "book", "Genesis", 0, 0, 0, "Genesis", "a", "h1")
+        upsert_chunk(db_path, "chapter", "Genesis", 0, 0, 0, "Genesis", "b", "h2")
+        counts = chunk_counts(db_path)
+        assert counts["book"][0] == 1
+        assert counts["chapter"][0] == 1
+
+
+class TestStaleChunks:
+
+    def _chunk(self, db_path, text_hash="h1", verse_start=1):
+        from bible_study.db import upsert_chunk
+        return upsert_chunk(
+            db_path, "verse", "Genesis", 1, verse_start, 5,
+            "Genesis 1:1-5", "text", text_hash,
+        )
+
+    def test_never_embedded_is_stale(self, db_path):
+        from bible_study.db import get_stale_chunks
+        self._chunk(db_path)
+        assert len(get_stale_chunks(db_path, "m", 4)) == 1
+
+    def test_current_chunk_is_not_stale(self, db_path):
+        from bible_study.db import get_stale_chunks, mark_chunks_embedded
+        cid = self._chunk(db_path)
+        mark_chunks_embedded(db_path, [cid], "m", 4)
+        assert get_stale_chunks(db_path, "m", 4) == []
+
+    def test_changed_text_is_stale(self, db_path):
+        from bible_study.db import get_stale_chunks, mark_chunks_embedded
+        cid = self._chunk(db_path, text_hash="h1")
+        mark_chunks_embedded(db_path, [cid], "m", 4)
+        self._chunk(db_path, text_hash="h2")
+        assert len(get_stale_chunks(db_path, "m", 4)) == 1
+
+    def test_model_change_is_stale(self, db_path):
+        from bible_study.db import get_stale_chunks, mark_chunks_embedded
+        cid = self._chunk(db_path)
+        mark_chunks_embedded(db_path, [cid], "old-model", 4)
+        assert len(get_stale_chunks(db_path, "new-model", 4)) == 1
+
+    def test_dims_change_is_stale(self, db_path):
+        from bible_study.db import get_stale_chunks, mark_chunks_embedded
+        cid = self._chunk(db_path)
+        mark_chunks_embedded(db_path, [cid], "m", 4)
+        assert len(get_stale_chunks(db_path, "m", 8)) == 1
+
+    def test_limit_is_honoured(self, db_path):
+        from bible_study.db import get_stale_chunks
+        for start in (1, 4, 7):
+            self._chunk(db_path, verse_start=start)
+        assert len(get_stale_chunks(db_path, "m", 4, limit=2)) == 2
+
+    def test_stale_chunks_are_ordered_by_id(self, db_path):
+        from bible_study.db import get_stale_chunks
+        for start in (1, 4, 7):
+            self._chunk(db_path, verse_start=start)
+        ids = [c["id"] for c in get_stale_chunks(db_path, "m", 4)]
+        assert ids == sorted(ids)
+
+    def test_mark_embedded_returns_row_count(self, db_path):
+        from bible_study.db import mark_chunks_embedded
+        cid = self._chunk(db_path)
+        assert mark_chunks_embedded(db_path, [cid], "m", 4) == 1
+
+    def test_mark_embedded_with_no_ids(self, db_path):
+        from bible_study.db import mark_chunks_embedded
+        assert mark_chunks_embedded(db_path, [], "m", 4) == 0
+
+
+class TestChunkReads:
+
+    def test_get_chunks_by_ids_returns_a_dict(self, db_path):
+        from bible_study.db import get_chunks_by_ids, upsert_chunk
+        cid = upsert_chunk(
+            db_path, "verse", "Genesis", 1, 1, 5, "Genesis 1:1-5", "text", "h",
+        )
+        found = get_chunks_by_ids(db_path, [cid])
+        assert found[cid]["citation"] == "Genesis 1:1-5"
+        assert found[cid]["book_name"] == "Genesis"
+        assert found[cid]["verse_end"] == 5
+
+    def test_get_chunks_by_ids_with_empty_list(self, db_path):
+        from bible_study.db import get_chunks_by_ids
+        assert get_chunks_by_ids(db_path, []) == {}
+
+    def test_get_chunks_by_ids_ignores_unknown_ids(self, db_path):
+        from bible_study.db import get_chunks_by_ids
+        assert get_chunks_by_ids(db_path, [9999]) == {}
+
+    def test_chunk_counts_splits_embedded(self, db_path):
+        from bible_study.db import chunk_counts, mark_chunks_embedded, upsert_chunk
+        a = upsert_chunk(db_path, "verse", "Genesis", 1, 1, 5, "c", "t", "h1")
+        upsert_chunk(db_path, "verse", "Genesis", 1, 4, 8, "c", "t", "h2")
+        mark_chunks_embedded(db_path, [a], "m", 4)
+        assert chunk_counts(db_path)["verse"] == (2, 1)
+
+    def test_chunk_counts_on_empty_db(self, db_path):
+        from bible_study.db import chunk_counts
+        assert chunk_counts(db_path) == {}
+
+    def test_clear_chunks_removes_everything(self, db_path):
+        from bible_study.db import chunk_counts, clear_chunks, upsert_chunk
+        upsert_chunk(db_path, "verse", "Genesis", 1, 1, 5, "c", "t", "h")
+        assert clear_chunks(db_path) == 1
+        assert chunk_counts(db_path) == {}
+
+
+class TestVecMeta:
+
+    def test_get_meta_returns_none_when_unset(self, db_path):
+        from bible_study.db import get_meta
+        assert get_meta(db_path, "embed_model") is None
+
+    def test_set_then_get_meta(self, db_path):
+        from bible_study.db import get_meta, set_meta
+        set_meta(db_path, "embed_model", "qwen3-embedding:0.6b")
+        assert get_meta(db_path, "embed_model") == "qwen3-embedding:0.6b"
+
+    def test_set_meta_overwrites(self, db_path):
+        from bible_study.db import get_meta, set_meta
+        set_meta(db_path, "embed_dims", "1024")
+        set_meta(db_path, "embed_dims", "768")
+        assert get_meta(db_path, "embed_dims") == "768"
+
+    def test_set_meta_stringifies(self, db_path):
+        from bible_study.db import get_meta, set_meta
+        set_meta(db_path, "embed_dims", 1024)
+        assert get_meta(db_path, "embed_dims") == "1024"

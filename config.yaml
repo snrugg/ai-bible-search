@@ -22,6 +22,29 @@ ollama_model: gemma3:4b
 # Larger windows cost memory; 131072 fits gemma3:4b entirely on GPU here.
 ollama_num_ctx: 131072
 
+# Ollama model used to embed chunks and questions for vector search.
+# Must be an *embedding* model, not a chat model:
+#     ollama pull qwen3-embedding:0.6b
+# Qwen3-Embedding is asymmetric -- questions are sent with an
+# "Instruct: ...\nQuery: ..." prefix while documents are sent raw.  Both
+# sides are handled in ollama.embed(); do not change one without the other.
+embed_model: qwen3-embedding:0.6b
+
+# Vector width emitted by embed_model.  This is baked into the vec0 virtual
+# tables when they are created and CANNOT be altered afterwards, so changing
+# it requires `bible-study embed --rebuild`.  Changing embed_model to a model
+# of a different width without rebuilding is detected and refused rather than
+# silently mixing two vector spaces.
+embed_dims: 1024
+
+# Verse chunking.  Windows of chunk_window verses advancing chunk_stride
+# verses at a time, so consecutive chunks overlap and an idea spanning a
+# boundary is still embedded as a unit.  window 5 / stride 3 yields 9,969
+# verse chunks; stride 5 (no overlap) yields 6,704 and embeds about a third
+# faster, at some cost in recall near the seams.
+chunk_window: 5
+chunk_stride: 3
+
 chapter_summary: |
   Summarize the following chapter of the King James Version (KJV) Bible.  You are a conservative Christian Bible scholar.
 
@@ -83,3 +106,25 @@ book_summary: |
   {chapter_summaries}
 
   Provide your summary below.
+
+ask: |
+  You are a conservative Christian Bible scholar. Answer the question below
+  using ONLY the sources provided.
+
+  Guidelines:
+  - Cite the reference (e.g. Genesis 1:1-5) for every claim you make.
+  - Prefer the King James Version text over the summaries where they
+    overlap; the summaries are study notes, not scripture.
+  - If the sources do not answer the question, say so plainly rather than
+    filling the gap from memory.
+  - Keep the tone neutral and informative -- like a study guide entry.
+  - Where the sources disagree or are ambiguous, say so rather than
+    resolving it silently.
+
+  Question:
+  {question}
+
+  Sources:
+  {context}
+
+  Provide your answer below.
