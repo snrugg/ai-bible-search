@@ -112,6 +112,8 @@ The test run checks the **working tree, not the staged snapshot**. Stashing unst
 
 There is no `pre-push` hook: the repo has no remote, so it would never fire.
 
+`.github/workflows/tests.yml` runs the same suite on GitHub for push and pull requests, so the coverage floor is enforced for contributors who never enable the hook. It also verifies sqlite-vec loads before running tests — on a runner that fails to load the extension, that turns a mass of confusing test failures into one clear message.
+
 ## Ollama Context Window
 
 **Ollama never errors on an over-long prompt.** llama.cpp runs with `--context-shift`, which evicts the *oldest* tokens and answers anyway. Since every template puts its instructions first and `{chapter_text}` / `{chapter_summaries}` last, the instruction header is the first thing discarded — the model returns a confident, well-formed answer to a question it only partially saw. This is invisible unless you check the output against the template it was supposed to follow.

@@ -1,9 +1,24 @@
 [project]
 name = "bible-study"
 version = "0.1.0"
-description = "Index the KJV Bible and generate chapter-level summaries via local LLMs"
+description = "Index, summarize and semantically search the KJV Bible with local LLMs"
 readme = "README.md"
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nathan Jones" }]
+keywords = ["bible", "kjv", "llm", "ollama", "sqlite", "vector-search", "rag"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Religion",
+    "Topic :: Text Processing :: Indexing",
+    "Private :: Do Not Upload",
+]
 
 dependencies = [
      "click>=8.2",
@@ -14,6 +29,13 @@ dependencies = [
 
 [project.scripts]
 bible-study = "bible_study.cli:cli"
+
+# Replace GITHUB-USER once the repo exists:
+#     grep -rl GITHUB-USER . --exclude-dir=.git | xargs sed -i '' 's|GITHUB-USER|yourname|g'
+[project.urls]
+Homepage = "https://github.com/GITHUB-USER/bible-study"
+Repository = "https://github.com/GITHUB-USER/bible-study"
+Issues = "https://github.com/GITHUB-USER/bible-study/issues"
 
 [build-system]
 requires = ["hatchling"]
